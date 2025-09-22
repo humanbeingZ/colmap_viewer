@@ -54,15 +54,15 @@ function populateImageSelects() {
 
     image1Select.innerHTML = '<option value="">Select Image 1</option>';
     image2Select.innerHTML = '<option value="">Select Image 2</option>';
-    allImages.forEach(image => {
+    allImages.forEach((image, index) => {
         const option1 = document.createElement('option');
         option1.value = image.id;
-        option1.textContent = image.name;
+        option1.textContent = `${index}: ${image.name}`;
         image1Select.appendChild(option1);
 
         const option2 = document.createElement('option');
         option2.value = image.id;
-        option2.textContent = image.name;
+        option2.textContent = `${index}: ${image.name}`;
         image2Select.appendChild(option2);
     });
 }
