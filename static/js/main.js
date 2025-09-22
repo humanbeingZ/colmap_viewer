@@ -4,7 +4,7 @@ const image1Canvas = document.getElementById('image1-canvas');
 const image2Canvas = document.getElementById('image2-canvas');
 const matchCanvas = document.getElementById('match-canvas');
 const showMarkersCheckbox = document.getElementById('show-markers');
-const markerSizeSlider = document.getElementById('marker-size');
+let markerSize = 3;
 const drawMatchesButton = document.getElementById('draw-matches');
 const showOnlyMatchedCheckbox = document.getElementById('show-only-matched');
 
@@ -134,8 +134,8 @@ function getColor(index, alpha = 1.0) {
 }
 
 function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
-    let markerSize = parseInt(markerSizeSlider.value);
-    markerSize = Math.max(1, markerSize / currentScale);
+    let size = markerSize;
+    size = Math.max(1, size / currentScale);
 
     points.forEach((p, index) => {
         if (onlyShowMatched) {
@@ -160,7 +160,7 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
         }
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, markerSize, 0, 2 * Math.PI);
+        ctx.arc(p.x, p.y, size, 0, 2 * Math.PI);
         ctx.fill();
     });
 }
@@ -234,10 +234,7 @@ showMarkersCheckbox.addEventListener('change', () => {
     redrawCanvas(image1Canvas, ctx1, 'image1');
     redrawCanvas(image2Canvas, ctx2, 'image2');
 });
-markerSizeSlider.addEventListener('input', () => {
-    redrawCanvas(image1Canvas, ctx1, 'image1');
-    redrawCanvas(image2Canvas, ctx2, 'image2');
-});
+
 
 let matchedIndices1 = new Set();
 let matchedIndices2 = new Set();
@@ -287,6 +284,18 @@ function getCanvasKey(canvas) {
 
 function handleWheel(e) {
     e.preventDefault();
+
+    if (e.ctrlKey || e.metaKey) {
+        if (e.deltaY < 0) {
+            markerSize *= 1.25;
+        } else {
+            markerSize /= 1.25;
+        }
+        redrawCanvas(image1Canvas, ctx1, 'image1');
+        redrawCanvas(image2Canvas, ctx2, 'image2');
+        return;
+    }
+
     const canvas = e.target;
     const ctx = canvas.getContext('2d');
     const canvasKey = getCanvasKey(canvas);
@@ -297,9 +306,9 @@ function handleWheel(e) {
     const mouseY = e.clientY - canvas.getBoundingClientRect().top;
 
     const oldScale = state.scale;
-    if (e.deltaY < 0) {
+    if (e.deltaY < 0) { // Zoom in
         state.scale *= scaleAmount;
-    } else {
+    } else { // Zoom out
         state.scale /= scaleAmount;
     }
 
