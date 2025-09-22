@@ -119,7 +119,25 @@ async def get_image_data(image_id: int):
         camera_params=[float(p) for p in camera.params]
     )
 
-# TODO: Add endpoints for matches and epipolar lines
+
+@app.get("/api/matches/{image_id1}/{image_id2}")
+async def get_matches(image_id1: int, image_id2: int):
+    if reconstruction_data is None:
+        raise HTTPException(status_code=500, detail="COLMAP data not loaded.")
+
+    db_path = os.path.join(colmap_project_path, "database.db")
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=500, detail="Database file not found.")
+
+    try:
+        db = pycolmap.Database(db_path)
+        matches = db.read_matches(image_id1, image_id2)
+        db.close()
+        return matches.tolist()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading matches: {e}")
+
+# TODO: Add endpoints for epipolar lines
 # This will require reading the database.db file using pycolmap.Database
 # and then computing epipolar lines based on camera poses.
 

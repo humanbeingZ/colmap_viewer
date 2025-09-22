@@ -74,6 +74,7 @@ body {
     align-items: center;
     background-color: #eee;
     height: 100%;
+    position: relative; /* This is needed for the overlay canvas */
 }
 
 .image-panel {

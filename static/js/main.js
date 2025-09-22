@@ -2,6 +2,7 @@ const image1Select = document.getElementById('image1-select');
 const image2Select = document.getElementById('image2-select');
 const image1Canvas = document.getElementById('image1-canvas');
 const image2Canvas = document.getElementById('image2-canvas');
+const matchCanvas = document.getElementById('match-canvas');
 const showMarkersCheckbox = document.getElementById('show-markers');
 const markerSizeSlider = document.getElementById('marker-size');
 const drawMatchesButton = document.getElementById('draw-matches');
@@ -9,12 +10,14 @@ const drawEpipolarButton = document.getElementById('draw-epipolar');
 
 const ctx1 = image1Canvas.getContext('2d');
 const ctx2 = image2Canvas.getContext('2d');
+const matchCtx = matchCanvas.getContext('2d');
 
 let allImages = [];
 let currentImage1Data = null;
 let currentImage2Data = null;
 let currentImage1 = new Image();
 let currentImage2 = new Image();
+let currentMatches = [];
 
 const canvasStates = {
     image1: { scale: 1, translateX: 0, translateY: 0, isDragging: false, lastMouseX: 0, lastMouseY: 0 },
@@ -70,19 +73,16 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
         }
 
         imageElement.onload = () => {
-            // Set canvas dimensions to match its parent panel for consistent sizing
             const panel = canvas.parentElement;
             canvas.width = panel.clientWidth;
             canvas.height = panel.clientHeight;
-            console.log(`Panel: ${panel.clientWidth}x${panel.clientHeight}, Canvas: ${canvas.width}x${canvas.height}`);
 
-            // Calculate initial scale to fit image within canvas
             const scaleX = canvas.width / imageElement.width;
             const scaleY = canvas.height / imageElement.height;
-            state.scale = Math.min(scaleX, scaleY); // Fit to view
+            state.scale = Math.min(scaleX, scaleY);
             state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
             state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
-            console.log(`Image: ${imageElement.width}x${imageElement.height}, Scale: ${state.scale}, Translate: ${state.translateX}, ${state.translateY}`);
+            
             redrawCanvas(canvas, ctx, canvasKey);
         };
         imageElement.src = `/serve_image/${imageData.name}`;
@@ -97,38 +97,27 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     const imageElement = (canvasKey === 'image1') ? currentImage1 : currentImage2;
     const imageData = (canvasKey === 'image1') ? currentImage1Data : currentImage2Data;
 
-    console.log(`redrawCanvas for ${canvasKey}: imageElement.src=${imageElement.src}, imageData=${!!imageData}`);
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (!imageElement.src || !imageData) {
-        console.log(`redrawCanvas for ${canvasKey}: Returning early due to missing image or data.`);
-        return; // Nothing to draw yet
+        return;
     }
 
-    ctx.save(); // Save the un-transformed state
-
-    // Apply transformations
+    ctx.save();
     ctx.translate(state.translateX, state.translateY);
     ctx.scale(state.scale, state.scale);
-
-    // Draw image at its original size (transformations handle scaling and positioning)
     ctx.drawImage(imageElement, 0, 0, imageElement.width, imageElement.height);
 
     if (showMarkersCheckbox.checked) {
-        // Draw feature points - coordinates are already in original image space
         drawFeaturePoints(ctx, imageData.points2D, state.scale);
     }
 
-    ctx.restore(); // Restore the un-transformed state
+    ctx.restore();
 }
 
-// Function to draw feature points
 function drawFeaturePoints(ctx, points, currentScale) {
-    let markerSize = parseInt(markerSizeSlider.value); // This is the desired screen-space size
-    // We are drawing in the transformed context, so we need to divide by scale
-    // to make it appear constant in screen space.
-    markerSize = Math.max(1, markerSize / currentScale); // Ensure minimum 1 pixel size
+    let markerSize = parseInt(markerSizeSlider.value);
+    markerSize = Math.max(1, markerSize / currentScale);
 
     ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
     points.forEach(p => {
@@ -138,9 +127,71 @@ function drawFeaturePoints(ctx, points, currentScale) {
     });
 }
 
+function imageToCanvas(point, canvasKey) {
+    const state = canvasStates[canvasKey];
+    const canvas = (canvasKey === 'image1') ? image1Canvas : image2Canvas;
+    const panel = canvas.parentElement;
+
+    const x_in_canvas = point.x * state.scale + state.translateX;
+    const y_in_canvas = point.y * state.scale + state.translateY;
+
+    const x = x_in_canvas + panel.offsetLeft;
+    const y = y_in_canvas + panel.offsetTop;
+
+    return { x, y };
+}
+
+function isPointVisible(point, canvasKey) {
+    const state = canvasStates[canvasKey];
+    const canvas = (canvasKey === 'image1') ? image1Canvas : image2Canvas;
+
+    const x_in_canvas = point.x * state.scale + state.translateX;
+    const y_in_canvas = point.y * state.scale + state.translateY;
+
+    return x_in_canvas >= 0 && x_in_canvas <= canvas.width &&
+           y_in_canvas >= 0 && y_in_canvas <= canvas.height;
+}
+
+function drawMatches() {
+    matchCanvas.width = matchCanvas.parentElement.clientWidth;
+    matchCanvas.height = matchCanvas.parentElement.clientHeight;
+    matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
+
+    if (!currentImage1Data || !currentImage2Data || currentMatches.length === 0) {
+        return;
+    }
+
+    matchCtx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
+    matchCtx.lineWidth = 1;
+
+    currentMatches.forEach(match => {
+        const p1 = currentImage1Data.points2D[match[0]];
+        const p2 = currentImage2Data.points2D[match[1]];
+
+        if (isPointVisible(p1, 'image1') && isPointVisible(p2, 'image2')) {
+            const p1Canvas = imageToCanvas(p1, 'image1');
+            const p2Canvas = imageToCanvas(p2, 'image2');
+
+            matchCtx.beginPath();
+            matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
+            matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
+            matchCtx.stroke();
+        }
+    });
+}
+
 // Event Listeners
-image1Select.addEventListener('change', () => drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true));
-image2Select.addEventListener('change', () => drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false));
+image1Select.addEventListener('change', () => {
+    drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
+    currentMatches = [];
+    drawMatches();
+});
+image2Select.addEventListener('change', () => {
+    drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
+    currentMatches = [];
+    drawMatches();
+});
+
 showMarkersCheckbox.addEventListener('change', () => {
     redrawCanvas(image1Canvas, ctx1, 'image1');
     redrawCanvas(image2Canvas, ctx2, 'image2');
@@ -150,12 +201,28 @@ markerSizeSlider.addEventListener('input', () => {
     redrawCanvas(image2Canvas, ctx2, 'image2');
 });
 
-// Function to get canvas key from canvas element
+drawMatchesButton.addEventListener('click', async () => {
+    const imageId1 = image1Select.value;
+    const imageId2 = image2Select.value;
+
+    if (!imageId1 || !imageId2) {
+        alert('Please select two images.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
+        currentMatches = await response.json();
+        drawMatches();
+    } catch (error) {
+        console.error('Error fetching matches:', error);
+    }
+});
+
 function getCanvasKey(canvas) {
     return canvas.id === 'image1-canvas' ? 'image1' : 'image2';
 }
 
-// Generic event handlers for zoom and pan
 function handleWheel(e) {
     e.preventDefault();
     const canvas = e.target;
@@ -168,9 +235,9 @@ function handleWheel(e) {
     const mouseY = e.clientY - canvas.getBoundingClientRect().top;
 
     const oldScale = state.scale;
-    if (e.deltaY < 0) { // Zoom in
+    if (e.deltaY < 0) {
         state.scale *= scaleAmount;
-    } else { // Zoom out
+    } else {
         state.scale /= scaleAmount;
     }
 
@@ -178,6 +245,7 @@ function handleWheel(e) {
     state.translateY = mouseY - (mouseY - state.translateY) * (state.scale / oldScale);
 
     redrawCanvas(canvas, ctx, canvasKey);
+    drawMatches();
 }
 
 function handleMouseDown(e) {
@@ -203,6 +271,7 @@ function handleMouseMove(e) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
         redrawCanvas(canvas, ctx, canvasKey);
+        drawMatches();
     }
 }
 
@@ -220,7 +289,6 @@ function handleMouseOut(e) {
     state.isDragging = false;
 }
 
-// Attach event listeners to both canvases
 image1Canvas.addEventListener('wheel', handleWheel);
 image1Canvas.addEventListener('mousedown', handleMouseDown);
 image1Canvas.addEventListener('mousemove', handleMouseMove);
@@ -233,19 +301,10 @@ image2Canvas.addEventListener('mousemove', handleMouseMove);
 image2Canvas.addEventListener('mouseup', handleMouseUp);
 image2Canvas.addEventListener('mouseout', handleMouseOut);
 
-// Initial fetch
-fetchImages();
-
-// Handle window resize to adjust canvas size
 window.addEventListener('resize', () => {
-    // Re-initialize scale and translation to fit image on resize
-    // This might reset user's zoom/pan, but ensures image is visible
     drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
     drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
-    // After redrawing, ensure the zoom/pan state is re-applied for consistency
-    redrawCanvas(image1Canvas, ctx1, 'image1');
-    redrawCanvas(image2Canvas, ctx2, 'image2');
+    drawMatches();
 });
 
-// TODO: Implement drawMatches and drawEpipolar functions and their event listeners
-
+fetchImages();
