@@ -120,6 +120,27 @@ async def get_image_data(image_id: int):
     )
 
 
+@app.get("/api/matches_for_image/{image_id}")
+async def get_matches_for_image(image_id: int):
+    if reconstruction_data is None:
+        raise HTTPException(status_code=500, detail="COLMAP data not loaded.")
+
+    db_path = os.path.join(colmap_project_path, "database.db")
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=500, detail="Database file not found.")
+
+    try:
+        db = pycolmap.Database(db_path)
+        matched_image_ids = []
+        for other_image_id in reconstruction_data.images:
+            if image_id != other_image_id and db.exists_matches(image_id, other_image_id):
+                matched_image_ids.append(other_image_id)
+        db.close()
+        return matched_image_ids
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading matches: {e}")
+
+
 @app.get("/api/matches/{image_id1}/{image_id2}")
 async def get_matches(image_id1: int, image_id2: int):
     if reconstruction_data is None:

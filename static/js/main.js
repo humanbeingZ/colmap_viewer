@@ -225,11 +225,40 @@ function drawMatches() {
     });
 }
 
+async function updateImage2List() {
+    const imageId1 = image1Select.value;
+    if (!imageId1) {
+        populateImageSelects(); // Reset to full list if no image is selected
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/matches_for_image/${imageId1}`);
+        const matchedImageIds = await response.json();
+        const matchedImageIdsSet = new Set(matchedImageIds);
+
+        const filteredImages = allImages.filter(image => matchedImageIdsSet.has(image.id));
+
+        image2Select.innerHTML = '<option value="">Select Image 2</option>';
+        filteredImages.forEach(image => {
+            const originalIndex = allImages.findIndex(img => img.id === image.id);
+            const option = document.createElement('option');
+            option.value = image.id;
+            option.textContent = `${originalIndex}: ${image.name}`;
+            image2Select.appendChild(option);
+        });
+
+    } catch (error) {
+        console.error('Error fetching matched images:', error);
+    }
+}
+
 // Event Listeners
 image1Select.addEventListener('change', () => {
     drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
     currentMatches = [];
     drawMatches();
+    updateImage2List();
 });
 image2Select.addEventListener('change', () => {
     drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
