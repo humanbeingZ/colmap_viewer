@@ -68,6 +68,7 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
 
         if (isLeftPanel) {
             currentImage1Data = imageData;
+            image1Colors = imageData.points2D.map((p, i) => getColor(i, 0.5));
         } else {
             currentImage2Data = imageData;
         }
@@ -109,18 +110,38 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     ctx.drawImage(imageElement, 0, 0, imageElement.width, imageElement.height);
 
     if (showMarkersCheckbox.checked) {
-        drawFeaturePoints(ctx, imageData.points2D, state.scale);
+        drawFeaturePoints(ctx, imageData.points2D, state.scale, canvasKey);
     }
 
     ctx.restore();
 }
 
-function drawFeaturePoints(ctx, points, currentScale) {
+let image1Colors = [];
+let matches_map_img2_to_img1 = new Map();
+
+function getColor(index, alpha = 1.0) {
+    const magicNum = (index * 11) % 36;
+    const hue = (magicNum / 36) * 360;
+    return `hsla(${hue}, 100%, 50%, ${alpha})`;
+}
+
+function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
     let markerSize = parseInt(markerSizeSlider.value);
     markerSize = Math.max(1, markerSize / currentScale);
 
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
-    points.forEach(p => {
+    points.forEach((p, index) => {
+        let color;
+        if (canvasKey === 'image1') {
+            color = image1Colors[index];
+        } else { // image2
+            if (matches_map_img2_to_img1.has(index)) {
+                const index_in_img1 = matches_map_img2_to_img1.get(index);
+                color = image1Colors[index_in_img1];
+            } else {
+                color = getColor(index, 0.5);
+            }
+        }
+        ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(p.x, p.y, markerSize, 0, 2 * Math.PI);
         ctx.fill();
@@ -213,7 +234,10 @@ drawMatchesButton.addEventListener('click', async () => {
     try {
         const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
         currentMatches = await response.json();
+        matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
         drawMatches();
+        redrawCanvas(image1Canvas, ctx1, 'image1');
+        redrawCanvas(image2Canvas, ctx2, 'image2');
     } catch (error) {
         console.error('Error fetching matches:', error);
     }
