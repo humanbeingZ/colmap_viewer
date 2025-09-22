@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COLMAP Viewer</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <h1>COLMAP Viewer</h1>
+            <div class="image-selection">
+                <label for="image1-select">Image 1:</label>
+                <select id="image1-select"></select>
+                <label for="image2-select">Image 2:</label>
+                <select id="image2-select"></select>
+            </div>
+            <div class="display-options">
+                <label>
+                    <input type="checkbox" id="show-markers" checked> Show Markers
+                </label>
+                <label>
+                    Marker Size: <input type="range" id="marker-size" min="1" max="10" value="3">
+                </label>
+            </div>
+            <div class="action-buttons">
+                <button id="draw-matches">Draw Matches</button>
+                <button id="draw-epipolar">Draw Epipolar Lines</button>
+            </div>
+        </div>
+        <div class="viewer">
+            <div class="image-panel">
+                <canvas id="image1-canvas"></canvas>
+            </div>
+            <div class="image-panel">
+                <canvas id="image2-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
