@@ -242,27 +242,43 @@ markerSizeSlider.addEventListener('input', () => {
 let matchedIndices1 = new Set();
 let matchedIndices2 = new Set();
 
+let matchesVisible = false;
+
 drawMatchesButton.addEventListener('click', async () => {
-    const imageId1 = image1Select.value;
-    const imageId2 = image2Select.value;
+    matchesVisible = !matchesVisible;
 
-    if (!imageId1 || !imageId2) {
-        alert('Please select two images.');
-        return;
+    if (matchesVisible) {
+        const imageId1 = image1Select.value;
+        const imageId2 = image2Select.value;
+
+        if (!imageId1 || !imageId2) {
+            alert('Please select two images.');
+            matchesVisible = false;
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
+            currentMatches = await response.json();
+            matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
+            matchedIndices1 = new Set(currentMatches.map(m => m[0]));
+            matchedIndices2 = new Set(currentMatches.map(m => m[1]));
+            drawMatchesButton.textContent = 'Hide Matches';
+        } catch (error) {
+            console.error('Error fetching matches:', error);
+            matchesVisible = false;
+        }
+    } else {
+        currentMatches = [];
+        matches_map_img2_to_img1.clear();
+        matchedIndices1.clear();
+        matchedIndices2.clear();
+        drawMatchesButton.textContent = 'Draw Matches';
     }
 
-    try {
-        const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
-        currentMatches = await response.json();
-        matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
-        matchedIndices1 = new Set(currentMatches.map(m => m[0]));
-        matchedIndices2 = new Set(currentMatches.map(m => m[1]));
-        drawMatches();
-        redrawCanvas(image1Canvas, ctx1, 'image1');
-        redrawCanvas(image2Canvas, ctx2, 'image2');
-    } catch (error) {
-        console.error('Error fetching matches:', error);
-    }
+    drawMatches();
+    redrawCanvas(image1Canvas, ctx1, 'image1');
+    redrawCanvas(image2Canvas, ctx2, 'image2');
 });
 
 function getCanvasKey(canvas) {
