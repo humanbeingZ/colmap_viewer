@@ -6,7 +6,15 @@ const matchCanvas = document.getElementById('match-canvas');
 const showMarkersCheckbox = document.getElementById('show-markers');
 const markerSizeSlider = document.getElementById('marker-size');
 const drawMatchesButton = document.getElementById('draw-matches');
-const drawEpipolarButton = document.getElementById('draw-epipolar');
+const showOnlyMatchedCheckbox = document.getElementById('show-only-matched');
+
+let onlyShowMatched = false;
+
+showOnlyMatchedCheckbox.addEventListener('change', () => {
+    onlyShowMatched = showOnlyMatchedCheckbox.checked;
+    redrawCanvas(image1Canvas, ctx1, 'image1');
+    redrawCanvas(image2Canvas, ctx2, 'image2');
+});
 
 const ctx1 = image1Canvas.getContext('2d');
 const ctx2 = image2Canvas.getContext('2d');
@@ -130,6 +138,15 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
     markerSize = Math.max(1, markerSize / currentScale);
 
     points.forEach((p, index) => {
+        if (onlyShowMatched) {
+            if (canvasKey === 'image1' && !matchedIndices1.has(index)) {
+                return;
+            }
+            if (canvasKey === 'image2' && !matchedIndices2.has(index)) {
+                return;
+            }
+        }
+
         let color;
         if (canvasKey === 'image1') {
             color = image1Colors[index];
@@ -222,6 +239,9 @@ markerSizeSlider.addEventListener('input', () => {
     redrawCanvas(image2Canvas, ctx2, 'image2');
 });
 
+let matchedIndices1 = new Set();
+let matchedIndices2 = new Set();
+
 drawMatchesButton.addEventListener('click', async () => {
     const imageId1 = image1Select.value;
     const imageId2 = image2Select.value;
@@ -235,6 +255,8 @@ drawMatchesButton.addEventListener('click', async () => {
         const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
         currentMatches = await response.json();
         matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
+        matchedIndices1 = new Set(currentMatches.map(m => m[0]));
+        matchedIndices2 = new Set(currentMatches.map(m => m[1]));
         drawMatches();
         redrawCanvas(image1Canvas, ctx1, 'image1');
         redrawCanvas(image2Canvas, ctx2, 'image2');
