@@ -50,6 +50,8 @@ async function fetchImages() {
 
 // Function to populate the image selection dropdowns
 function populateImageSelects() {
+    allImages.sort((a, b) => a.name.localeCompare(b.name));
+
     image1Select.innerHTML = '<option value="">Select Image 1</option>';
     image2Select.innerHTML = '<option value="">Select Image 2</option>';
     allImages.forEach(image => {
