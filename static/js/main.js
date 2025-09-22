@@ -10,8 +10,13 @@ const showOnlyMatchedCheckbox = document.getElementById('show-only-matched');
 
 let onlyShowMatched = false;
 
-showOnlyMatchedCheckbox.addEventListener('change', () => {
+showOnlyMatchedCheckbox.addEventListener('change', async () => {
     onlyShowMatched = showOnlyMatchedCheckbox.checked;
+
+    if (onlyShowMatched && currentMatches.length === 0) {
+        await fetchMatches();
+    }
+
     redrawCanvas(image1Canvas, ctx1, 'image1');
     redrawCanvas(image2Canvas, ctx2, 'image2');
 });
@@ -195,7 +200,7 @@ function drawMatches() {
     matchCanvas.height = matchCanvas.parentElement.clientHeight;
     matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
 
-    if (!currentImage1Data || !currentImage2Data || currentMatches.length === 0) {
+    if (!linesVisible || !currentImage1Data || !currentImage2Data || currentMatches.length === 0) {
         return;
     }
 
@@ -239,43 +244,48 @@ showMarkersCheckbox.addEventListener('change', () => {
 let matchedIndices1 = new Set();
 let matchedIndices2 = new Set();
 
-let matchesVisible = false;
+let linesVisible = false;
+
+async function fetchMatches() {
+    const imageId1 = image1Select.value;
+    const imageId2 = image2Select.value;
+
+    if (!imageId1 || !imageId2) {
+        alert('Please select two images.');
+        return false;
+    }
+
+    try {
+        const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
+        currentMatches = await response.json();
+        matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
+        matchedIndices1 = new Set(currentMatches.map(m => m[0]));
+        matchedIndices2 = new Set(currentMatches.map(m => m[1]));
+        return true;
+    } catch (error) {
+        console.error('Error fetching matches:', error);
+        return false;
+    }
+}
 
 drawMatchesButton.addEventListener('click', async () => {
-    matchesVisible = !matchesVisible;
+    linesVisible = !linesVisible;
 
-    if (matchesVisible) {
-        const imageId1 = image1Select.value;
-        const imageId2 = image2Select.value;
-
-        if (!imageId1 || !imageId2) {
-            alert('Please select two images.');
-            matchesVisible = false;
+    if (linesVisible && currentMatches.length === 0) {
+        const success = await fetchMatches();
+        if (!success) {
+            linesVisible = false;
             return;
         }
+    }
 
-        try {
-            const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
-            currentMatches = await response.json();
-            matches_map_img2_to_img1 = new Map(currentMatches.map(m => [m[1], m[0]]));
-            matchedIndices1 = new Set(currentMatches.map(m => m[0]));
-            matchedIndices2 = new Set(currentMatches.map(m => m[1]));
-            drawMatchesButton.textContent = 'Hide Matches';
-        } catch (error) {
-            console.error('Error fetching matches:', error);
-            matchesVisible = false;
-        }
+    if (linesVisible) {
+        drawMatchesButton.textContent = 'Hide Matches';
     } else {
-        currentMatches = [];
-        matches_map_img2_to_img1.clear();
-        matchedIndices1.clear();
-        matchedIndices2.clear();
         drawMatchesButton.textContent = 'Draw Matches';
     }
 
     drawMatches();
-    redrawCanvas(image1Canvas, ctx1, 'image1');
-    redrawCanvas(image2Canvas, ctx2, 'image2');
 });
 
 function getCanvasKey(canvas) {
