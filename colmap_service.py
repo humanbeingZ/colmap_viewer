@@ -175,25 +175,59 @@ class ColmapService:
 
     def get_matches_for_image(self, image_id: int) -> List[int]:
         """Returns a list of image IDs that have matches with the given image ID."""
-        if not self.db:
+        if self.db:
+            all_images = self.get_images()
+            image_ids = {img['id'] for img in all_images}
+            matched_image_ids = []
+            for other_image_id in image_ids:
+                if image_id != other_image_id and self.db.exists_matches(image_id, other_image_id):
+                    matched_image_ids.append(other_image_id)
+            return matched_image_ids
+        elif self.reconstruction:
+            return self._get_matches_for_image_from_recon(image_id)
+        return []
+
+    def _get_matches_for_image_from_recon(self, image_id: int) -> List[int]:
+        if not self.reconstruction or image_id not in self.reconstruction.images:
             return []
 
-        all_images = self.get_images()
-        image_ids = {img['id'] for img in all_images}
+        image = self.reconstruction.images[image_id]
+        observed_points3D = {p.point3D_id for p in image.points2D if p.has_point3D()}
 
-        matched_image_ids = []
-        for other_image_id in image_ids:
-            if image_id != other_image_id and self.db.exists_matches(image_id, other_image_id):
-                matched_image_ids.append(other_image_id)
-        return matched_image_ids
+        matched_image_ids = set()
+        for p3D_id in observed_points3D:
+            point3D = self.reconstruction.points3D[p3D_id]
+            for track_element in point3D.track.elements:
+                if track_element.image_id != image_id:
+                    matched_image_ids.add(track_element.image_id)
+
+        return sorted(list(matched_image_ids))
 
     def get_matches(self, image_id1: int, image_id2: int) -> Optional[List]:
         """Returns the matches between two images."""
-        if self.db is None:
+        if self.db:
+            try:
+                matches = self.db.read_matches(image_id1, image_id2)
+                return matches.tolist()
+            except Exception:
+                return None
+        elif self.reconstruction:
+            return self._get_matches_from_recon(image_id1, image_id2)
+        return None
+
+    def _get_matches_from_recon(self, image_id1: int, image_id2: int) -> Optional[List]:
+        if not self.reconstruction or image_id1 not in self.reconstruction.images or image_id2 not in self.reconstruction.images:
             return None
 
-        try:
-            matches = self.db.read_matches(image_id1, image_id2)
-            return matches.tolist()
-        except Exception:
-            return None
+        image1 = self.reconstruction.images[image_id1]
+        image2 = self.reconstruction.images[image_id2]
+
+        points1_map = {p.point3D_id: i for i, p in enumerate(image1.points2D) if p.has_point3D()}
+
+        matches = []
+        for i2, p2 in enumerate(image2.points2D):
+            if p2.has_point3D() and p2.point3D_id in points1_map:
+                i1 = points1_map[p2.point3D_id]
+                matches.append([i1, i2])
+
+        return matches
