@@ -260,11 +260,36 @@ function drawMatches() {
 
 // --- Event Handlers ---
 
-image1Select.addEventListener("change", () => {
-    drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
-    currentMatches = [];
-    drawMatches();
-    updateImage2List();
+image1Select.addEventListener("change", async () => {
+    const imageId1 = image1Select.value;
+    const oldImageId2 = image2Select.value;
+
+    currentMatches = []; // Clear matches at the beginning
+
+    // Draw the new first image
+    await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, imageId1, true);
+
+    // Update the list of second images based on the new first image
+    await updateImage2List();
+
+    // Check if the previously selected second image is still in the updated list
+    const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
+    if (oldImageId2 && newImage2Options.includes(oldImageId2)) {
+        // If it is, keep it selected and update matches
+        image2Select.value = oldImageId2;
+        if (linesVisible || onlyShowMatched) {
+            await handleFetchMatches();
+        }
+        redrawCanvas(image1Canvas, ctx1, "image1");
+        redrawCanvas(image2Canvas, ctx2, "image2");
+        drawMatches();
+    } else {
+        // If not, clear the second image selection and canvas
+        image2Select.value = "";
+        await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, null, false);
+        // currentMatches is already cleared
+        drawMatches();
+    }
 });
 
 image2Select.addEventListener("change", async () => {
