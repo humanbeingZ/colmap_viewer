@@ -267,9 +267,16 @@ image1Select.addEventListener("change", () => {
     updateImage2List();
 });
 
-image2Select.addEventListener("change", () => {
-    drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
+image2Select.addEventListener("change", async () => {
+    await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
     currentMatches = [];
+
+    if (linesVisible || onlyShowMatched) {
+        await handleFetchMatches();
+    }
+
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
     drawMatches();
 });
 
