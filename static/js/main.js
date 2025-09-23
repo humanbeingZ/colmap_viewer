@@ -1,5 +1,5 @@
-
 // Get DOM elements
+const sourceSelect = document.getElementById("source-select");
 const image1Select = document.getElementById("image1-select");
 const image2Select = document.getElementById("image2-select");
 const image1Canvas = document.getElementById("image1-canvas");
@@ -36,10 +36,40 @@ const canvasStates = {
 
 // --- Initialization ---
 
-// Fetch all images on page load
-fetchImages();
+// Initial setup on page load
+init();
+
+async function init() {
+    await initializeSources();
+    await fetchImages();
+}
 
 // --- API Functions ---
+
+async function initializeSources() {
+    try {
+        const response = await fetch("/api/sources");
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const sources = await response.json();
+
+        if (sources.length > 1) {
+            sourceSelect.innerHTML = "";
+            sources.forEach(source => {
+                const option = document.createElement("option");
+                option.value = source;
+                option.textContent = source;
+                sourceSelect.appendChild(option);
+            });
+            sourceSelect.parentElement.style.display = "block";
+        } else {
+            sourceSelect.parentElement.style.display = "none";
+        }
+    } catch (error) {
+        console.error("Error initializing sources:", error);
+    }
+}
 
 async function fetchImages() {
     try {
@@ -98,6 +128,9 @@ async function fetchMatches(imageId1, imageId2) {
 function populateImageSelects() {
     allImages.sort((a, b) => a.name.localeCompare(b.name));
 
+    const oldImage1 = image1Select.value;
+    const oldImage2 = image2Select.value;
+
     image1Select.innerHTML = '<option value="">Select Image 1</option>';
     image2Select.innerHTML = '<option value="">Select Image 2</option>';
 
@@ -112,6 +145,9 @@ function populateImageSelects() {
         option2.textContent = `${index}: ${image.name}`;
         image2Select.appendChild(option2);
     });
+
+    image1Select.value = oldImage1;
+    image2Select.value = oldImage2;
 }
 
 async function updateImage2List() {
@@ -144,6 +180,7 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
 
     if (!imageId) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (isLeftPanel) { currentImage1Data = null; } else { currentImage2Data = null; }
         return;
     }
 
@@ -160,20 +197,23 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
         currentImage2Data = imageData;
     }
 
-    imageElement.onload = () => {
-        const panel = canvas.parentElement;
-        canvas.width = panel.clientWidth;
-        canvas.height = panel.clientHeight;
+    return new Promise((resolve) => {
+        imageElement.onload = () => {
+            const panel = canvas.parentElement;
+            canvas.width = panel.clientWidth;
+            canvas.height = panel.clientHeight;
 
-        const scaleX = canvas.width / imageElement.width;
-        const scaleY = canvas.height / imageElement.height;
-        state.scale = Math.min(scaleX, scaleY);
-        state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
-        state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
+            const scaleX = canvas.width / imageElement.width;
+            const scaleY = canvas.height / imageElement.height;
+            state.scale = Math.min(scaleX, scaleY);
+            state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
+            state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
 
-        redrawCanvas(canvas, ctx, canvasKey);
-    };
-    imageElement.src = `/serve_image/${imageData.name}`;
+            redrawCanvas(canvas, ctx, canvasKey);
+            resolve();
+        };
+        imageElement.src = `/serve_image/${imageData.name}`;
+    });
 }
 
 function redrawCanvas(canvas, ctx, canvasKey) {
@@ -246,7 +286,7 @@ function drawMatches() {
         const p1 = currentImage1Data.points2D[match[0]];
         const p2 = currentImage2Data.points2D[match[1]];
 
-        if (isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
+        if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
             const p1Canvas = imageToCanvas(p1, "image1");
             const p2Canvas = imageToCanvas(p2, "image2");
 
@@ -260,22 +300,47 @@ function drawMatches() {
 
 // --- Event Handlers ---
 
+sourceSelect.addEventListener('change', async () => {
+    const newSource = sourceSelect.value;
+    const oldImageId1 = image1Select.value;
+    const oldImageId2 = image2Select.value;
+
+    await fetch(`/api/set_source/${newSource}`, { method: 'POST' });
+    await fetchImages();
+
+    image1Select.value = oldImageId1;
+    image2Select.value = oldImageId2;
+
+    if (oldImageId1) {
+        await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, oldImageId1, true);
+    }
+    if (oldImageId2) {
+        await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, oldImageId2, false);
+    }
+
+    if (oldImageId1 && oldImageId2) {
+        currentMatches = [];
+        if (linesVisible || onlyShowMatched) {
+            await handleFetchMatches();
+        }
+        // Redraw canvases to update markers based on new matches
+        redrawCanvas(image1Canvas, ctx1, "image1");
+        redrawCanvas(image2Canvas, ctx2, "image2");
+        drawMatches();
+    }
+});
+
 image1Select.addEventListener("change", async () => {
     const imageId1 = image1Select.value;
     const oldImageId2 = image2Select.value;
 
-    currentMatches = []; // Clear matches at the beginning
+    currentMatches = [];
 
-    // Draw the new first image
     await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, imageId1, true);
-
-    // Update the list of second images based on the new first image
     await updateImage2List();
 
-    // Check if the previously selected second image is still in the updated list
     const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
     if (oldImageId2 && newImage2Options.includes(oldImageId2)) {
-        // If it is, keep it selected and update matches
         image2Select.value = oldImageId2;
         if (linesVisible || onlyShowMatched) {
             await handleFetchMatches();
@@ -284,10 +349,8 @@ image1Select.addEventListener("change", async () => {
         redrawCanvas(image2Canvas, ctx2, "image2");
         drawMatches();
     } else {
-        // If not, clear the second image selection and canvas
         image2Select.value = "";
         await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, null, false);
-        // currentMatches is already cleared
         drawMatches();
     }
 });
@@ -313,7 +376,7 @@ showMarkersCheckbox.addEventListener("change", () => {
 showOnlyMatchedCheckbox.addEventListener("change", async () => {
     onlyShowMatched = showOnlyMatchedCheckbox.checked;
 
-    if (onlyShowMatched && currentMatches.length === 0) {
+    if (onlyShowMatched && currentMatches.length === 0 && image1Select.value && image2Select.value) {
         await handleFetchMatches();
     }
 
@@ -353,6 +416,10 @@ async function handleFetchMatches() {
         matchedIndices2 = new Set(currentMatches.map((m) => m[1]));
         return true;
     } else {
+        currentMatches = [];
+        matches_map_img2_to_img1 = new Map();
+        matchedIndices1 = new Set();
+        matchedIndices2 = new Set();
         return false;
     }
 }

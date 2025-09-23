@@ -1,4 +1,3 @@
-
 import argparse
 import os
 from typing import List, Dict, Any
@@ -6,21 +5,24 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from colmap_service import ColmapService
+from colmap_service import ColmapService, DataSource
 
 colmap_service: ColmapService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load the ML model
     global colmap_service
     colmap_service.load()
+
+    if not colmap_service.get_available_sources():
+        raise RuntimeError("Failed to load any COLMAP data. Please check the paths provided.")
+
     yield
-    # Clean up the ML models and release the resources
+    # Clean up resources if needed
 
 app = FastAPI(lifespan=lifespan)
 
@@ -61,12 +63,26 @@ async def serve_image(image_path: str):
 
     return Response(content=content, media_type=media_type)
 
+# --- New API Endpoints ---
+
+@app.get("/api/sources", response_model=List[str])
+async def get_sources():
+    return colmap_service.get_available_sources()
+
+@app.post("/api/set_source/{source_name}")
+async def set_source(source_name: str):
+    success = colmap_service.set_active_source(source_name)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Data source '{source_name}' not available.")
+    return {"message": f"Active data source set to {source_name}"}
+
+# --- Existing API Endpoints (now source-aware) ---
 
 @app.get("/api/images", response_model=List[Dict[str, Any]])
 async def get_images():
     images = colmap_service.get_images()
     if not images:
-        raise HTTPException(status_code=500, detail="COLMAP data not loaded.")
+        raise HTTPException(status_code=500, detail="COLMAP data not loaded or source is empty.")
     return images
 
 
@@ -74,7 +90,7 @@ async def get_images():
 async def get_image_data(image_id: int):
     image_data = colmap_service.get_image_data(image_id)
     if image_data is None:
-        raise HTTPException(status_code=404, detail="Image not found.")
+        raise HTTPException(status_code=404, detail="Image not found in active source.")
     return image_data
 
 
@@ -87,16 +103,26 @@ async def get_matches_for_image(image_id: int):
 async def get_matches(image_id1: int, image_id2: int):
     matches = colmap_service.get_matches(image_id1, image_id2)
     if matches is None:
-        raise HTTPException(status_code=500, detail="Error reading matches.")
+        # This can happen if there are no matches, which is not an error.
+        return []
     return matches
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--colmap_project_path", type=str, required=True)
     parser.add_argument("--image_base_path", type=str, required=True)
+    parser.add_argument("--colmap_project_path", type=str, default=None)
+    parser.add_argument("--database_path", type=str, default=None)
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
-    colmap_service = ColmapService(args.colmap_project_path, args.image_base_path)
+    if not args.colmap_project_path and not args.database_path:
+        raise ValueError("You must provide either --colmap_project_path or --database_path")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    colmap_service = ColmapService(
+        image_path=args.image_base_path,
+        project_path=args.colmap_project_path,
+        db_path=args.database_path
+    )
+
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
