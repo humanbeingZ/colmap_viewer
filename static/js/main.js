@@ -8,6 +8,8 @@ const matchCanvas = document.getElementById("match-canvas");
 const showMarkersCheckbox = document.getElementById("show-markers");
 const drawMatchesButton = document.getElementById("draw-matches");
 const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
+const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
+const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
@@ -20,7 +22,7 @@ let currentImage1Data = null;
 let currentImage2Data = null;
 let currentImage1 = new Image();
 let currentImage2 = new Image();
-let currentMatches = [];
+let currentMatches = { inlier: [], outlier: [] };
 let markerSize = 3;
 let onlyShowMatched = false;
 let linesVisible = false;
@@ -45,6 +47,24 @@ async function init() {
 }
 
 // --- API Functions ---
+
+showInlierMatchesCheckbox.addEventListener("change", async () => {
+    if (image1Select.value && image2Select.value) {
+        await handleFetchMatches();
+        redrawCanvas(image1Canvas, ctx1, "image1");
+        redrawCanvas(image2Canvas, ctx2, "image2");
+        drawMatches();
+    }
+});
+
+showWrongMatchesCheckbox.addEventListener("change", async () => {
+    if (image1Select.value && image2Select.value) {
+        await handleFetchMatches();
+        redrawCanvas(image1Canvas, ctx1, "image1");
+        redrawCanvas(image2Canvas, ctx2, "image2");
+        drawMatches();
+    }
+});
 
 async function initializeSources() {
     try {
@@ -110,9 +130,13 @@ async function fetchMatchesForImage(imageId) {
     }
 }
 
-async function fetchMatches(imageId1, imageId2) {
+async function fetchMatches(imageId1, imageId2, matchType = null) {
     try {
-        const response = await fetch(`/api/matches/${imageId1}/${imageId2}`);
+        let url = `/api/matches/${imageId1}/${imageId2}`;
+        if (matchType) {
+            url += `?match_type=${matchType}`;
+        }
+        const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -275,14 +299,32 @@ function drawMatches() {
     matchCanvas.height = matchCanvas.parentElement.clientHeight;
     matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
 
-    if (!linesVisible || !currentImage1Data || !currentImage2Data || currentMatches.length === 0) {
+    if (!linesVisible || !currentImage1Data || !currentImage2Data || (!currentMatches.inlier.length && !currentMatches.outlier.length)) {
         return;
     }
 
-    matchCtx.strokeStyle = "rgba(0, 255, 0, 0.5)";
     matchCtx.lineWidth = 1;
 
-    currentMatches.forEach((match) => {
+    // Draw inlier matches in green
+    matchCtx.strokeStyle = "rgba(0, 255, 0, 0.5)";
+    currentMatches.inlier.forEach((match) => {
+        const p1 = currentImage1Data.points2D[match[0]];
+        const p2 = currentImage2Data.points2D[match[1]];
+
+        if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
+            const p1Canvas = imageToCanvas(p1, "image1");
+            const p2Canvas = imageToCanvas(p2, "image2");
+
+            matchCtx.beginPath();
+            matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
+            matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
+            matchCtx.stroke();
+        }
+    });
+
+    // Draw outlier matches in red
+    matchCtx.strokeStyle = "rgba(255, 0, 0, 0.5)";
+    currentMatches.outlier.forEach((match) => {
         const p1 = currentImage1Data.points2D[match[0]];
         const p2 = currentImage2Data.points2D[match[1]];
 
@@ -319,7 +361,7 @@ sourceSelect.addEventListener('change', async () => {
     }
 
     if (oldImageId1 && oldImageId2) {
-        currentMatches = [];
+        currentMatches = { inlier: [], outlier: [] };
         if (linesVisible || onlyShowMatched) {
             await handleFetchMatches();
         }
@@ -334,7 +376,7 @@ image1Select.addEventListener("change", async () => {
     const imageId1 = image1Select.value;
     const oldImageId2 = image2Select.value;
 
-    currentMatches = [];
+    currentMatches = { inlier: [], outlier: [] };
 
     await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, imageId1, true);
     await updateImage2List();
@@ -357,7 +399,7 @@ image1Select.addEventListener("change", async () => {
 
 image2Select.addEventListener("change", async () => {
     await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
-    currentMatches = [];
+    currentMatches = { inlier: [], outlier: [] };
 
     if (linesVisible || onlyShowMatched) {
         await handleFetchMatches();
@@ -376,7 +418,7 @@ showMarkersCheckbox.addEventListener("change", () => {
 showOnlyMatchedCheckbox.addEventListener("change", async () => {
     onlyShowMatched = showOnlyMatchedCheckbox.checked;
 
-    if (onlyShowMatched && currentMatches.length === 0 && image1Select.value && image2Select.value) {
+    if (onlyShowMatched && currentMatches.inlier.length === 0 && currentMatches.outlier.length === 0 && image1Select.value && image2Select.value) {
         await handleFetchMatches();
     }
 
@@ -387,7 +429,7 @@ showOnlyMatchedCheckbox.addEventListener("change", async () => {
 drawMatchesButton.addEventListener("click", async () => {
     linesVisible = !linesVisible;
 
-    if (linesVisible && currentMatches.length === 0) {
+    if (linesVisible && currentMatches.inlier.length === 0 && currentMatches.outlier.length === 0) {
         const success = await handleFetchMatches();
         if (!success) {
             linesVisible = false;
@@ -408,20 +450,47 @@ async function handleFetchMatches() {
         return false;
     }
 
-    const matches = await fetchMatches(imageId1, imageId2);
-    if (matches) {
-        currentMatches = matches;
-        matches_map_img2_to_img1 = new Map(currentMatches.map((m) => [m[1], m[0]]));
-        matchedIndices1 = new Set(currentMatches.map((m) => m[0]));
-        matchedIndices2 = new Set(currentMatches.map((m) => m[1]));
-        return true;
+    const showInliers = showInlierMatchesCheckbox.checked;
+    const showOutliers = showWrongMatchesCheckbox.checked;
+
+    let inlierMatches = [];
+    let outlierMatches = [];
+
+    if (showInliers || showOutliers) {
+        if (showInliers && showOutliers) {
+            // Fetch all matches if both are checked
+            inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
+            outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
+        } else if (showInliers) {
+            inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
+        } else if (showOutliers) {
+            outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
+        }
     } else {
+        // If neither is checked, fetch all matches (default behavior)
+        inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
+        outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
+    }
+
+    if (inlierMatches === null || outlierMatches === null) {
         currentMatches = [];
         matches_map_img2_to_img1 = new Map();
         matchedIndices1 = new Set();
         matchedIndices2 = new Set();
         return false;
     }
+
+    currentMatches = {
+        inlier: inlierMatches || [],
+        outlier: outlierMatches || []
+    };
+
+    const allCombinedMatches = [...currentMatches.inlier, ...currentMatches.outlier];
+
+    matches_map_img2_to_img1 = new Map(allCombinedMatches.map((m) => [m[1], m[0]]));
+    matchedIndices1 = new Set(allCombinedMatches.map((m) => m[0]));
+    matchedIndices2 = new Set(allCombinedMatches.map((m) => m[1]));
+    return true;
 }
 
 // --- Canvas Interaction Handlers ---

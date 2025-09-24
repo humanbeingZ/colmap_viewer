@@ -203,16 +203,37 @@ class ColmapService:
 
         return sorted(list(matched_image_ids))
 
-    def get_matches(self, image_id1: int, image_id2: int) -> Optional[List]:
+    def get_matches(self, image_id1: int, image_id2: int, match_type: Optional[str] = None) -> Optional[List]:
         """Returns the matches between two images."""
         if self.db:
             try:
-                matches = self.db.read_matches(image_id1, image_id2)
-                return matches.tolist()
-            except Exception:
+                all_matches = self.db.read_matches(image_id1, image_id2)
+                if all_matches is None:
+                    return None
+                all_matches = all_matches.tolist()
+
+                two_view_geometry = self.db.read_two_view_geometry(image_id1, image_id2)
+                inlier_matches = []
+                if two_view_geometry and two_view_geometry.inlier_matches is not None:
+                    inlier_matches = two_view_geometry.inlier_matches.tolist()
+
+                if match_type == "inlier":
+                    return inlier_matches
+                elif match_type == "outlier":
+                    # Calculate outlier matches
+                    inlier_set = set(tuple(m) for m in inlier_matches)
+                    outlier_matches = [m for m in all_matches if tuple(m) not in inlier_set]
+                    return outlier_matches
+                else:  # None or "all"
+                    return all_matches
+            except Exception as e:
+                print(f"Error reading matches from database: {e}")
                 return None
         elif self.reconstruction:
-            return self._get_matches_from_recon(image_id1, image_id2)
+            if match_type == "outlier":
+                return []
+            else:
+                return self._get_matches_from_recon(image_id1, image_id2)
         return None
 
     def _get_matches_from_recon(self, image_id1: int, image_id2: int) -> Optional[List]:

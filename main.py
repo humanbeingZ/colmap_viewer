@@ -1,6 +1,6 @@
 import argparse
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -100,8 +100,8 @@ async def get_matches_for_image(image_id: int):
 
 
 @app.get("/api/matches/{image_id1}/{image_id2}")
-async def get_matches(image_id1: int, image_id2: int):
-    matches = colmap_service.get_matches(image_id1, image_id2)
+async def get_matches(image_id1: int, image_id2: int, match_type: Optional[str] = None):
+    matches = colmap_service.get_matches(image_id1, image_id2, match_type)
     if matches is None:
         # This can happen if there are no matches, which is not an error.
         return []
