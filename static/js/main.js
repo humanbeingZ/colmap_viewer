@@ -457,19 +457,16 @@ async function handleFetchMatches() {
     let outlierMatches = [];
 
     if (showInliers || showOutliers) {
-        if (showInliers && showOutliers) {
-            // Fetch all matches if both are checked
+        if (showInliers) {
             inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
-            outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
-        } else if (showInliers) {
-            inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
-        } else if (showOutliers) {
+        }
+        if (showOutliers) {
             outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
         }
     } else {
-        // If neither is checked, fetch all matches (default behavior)
-        inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
-        outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
+        // If neither is checked, do not fetch any matches.
+        inlierMatches = [];
+        outlierMatches = [];
     }
 
     if (inlierMatches === null || outlierMatches === null) {
