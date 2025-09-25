@@ -10,6 +10,7 @@ const drawMatchesButton = document.getElementById("draw-matches");
 const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
 const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
 const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
+const resetViewButton = document.getElementById("reset-view");
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
@@ -198,6 +199,18 @@ async function updateImage2List() {
 
 // --- Canvas Drawing Functions ---
 
+function resetCanvasState(canvas, imageElement, state) {
+    const panel = canvas.parentElement;
+    canvas.width = panel.clientWidth;
+    canvas.height = panel.clientHeight;
+
+    const scaleX = canvas.width / imageElement.width;
+    const scaleY = canvas.height / imageElement.height;
+    state.scale = Math.min(scaleX, scaleY);
+    state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
+    state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
+}
+
 async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPanel) {
     const canvasKey = isLeftPanel ? "image1" : "image2";
     const state = canvasStates[canvasKey];
@@ -223,16 +236,7 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
 
     return new Promise((resolve) => {
         imageElement.onload = () => {
-            const panel = canvas.parentElement;
-            canvas.width = panel.clientWidth;
-            canvas.height = panel.clientHeight;
-
-            const scaleX = canvas.width / imageElement.width;
-            const scaleY = canvas.height / imageElement.height;
-            state.scale = Math.min(scaleX, scaleY);
-            state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
-            state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
-
+            resetCanvasState(canvas, imageElement, state);
             redrawCanvas(canvas, ctx, canvasKey);
             resolve();
         };
@@ -437,7 +441,20 @@ drawMatchesButton.addEventListener("click", async () => {
         }
     }
 
-    drawMatchesButton.textContent = linesVisible ? "Hide Matches" : "Draw Matches";
+    drawMatches();
+});
+
+resetViewButton.addEventListener("click", () => {
+    if (currentImage1Data) {
+        const state1 = canvasStates['image1'];
+        resetCanvasState(image1Canvas, currentImage1, state1);
+        redrawCanvas(image1Canvas, ctx1, "image1");
+    }
+    if (currentImage2Data) {
+        const state2 = canvasStates['image2'];
+        resetCanvasState(image2Canvas, currentImage2, state2);
+        redrawCanvas(image2Canvas, ctx2, "image2");
+    }
     drawMatches();
 });
 
