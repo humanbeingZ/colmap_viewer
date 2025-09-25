@@ -75,6 +75,8 @@ body {
     background-color: #eee;
     height: 100%;
     position: relative; /* This is needed for the overlay canvas */
+    padding: 0 5px;
+    gap: 5px;
 }
 
 .image-panel {
@@ -86,7 +88,6 @@ body {
     align-items: center;
     overflow: hidden; /* Important for canvas scaling */
     flex: 1; /* Allow panels to grow and take available space equally */
-    margin: 10px; /* Add some margin between panels and container */
     height: 100%;
 }
 
