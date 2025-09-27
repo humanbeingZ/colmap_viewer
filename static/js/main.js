@@ -32,6 +32,13 @@ let matchedIndices2 = new Set();
 let image1Colors = [];
 let matches_map_img2_to_img1 = new Map();
 
+function resetMatchState() {
+    currentMatches = { inlier: [], outlier: [] };
+    matches_map_img2_to_img1 = new Map();
+    matchedIndices1 = new Set();
+    matchedIndices2 = new Set();
+}
+
 const canvasStates = {
     image1: { scale: 1, translateX: 0, translateY: 0, isDragging: false, lastMouseX: 0, lastMouseY: 0 },
     image2: { scale: 1, translateX: 0, translateY: 0, isDragging: false, lastMouseX: 0, lastMouseY: 0 },
@@ -351,6 +358,8 @@ sourceSelect.addEventListener('change', async () => {
     const oldImageId1 = image1Select.value;
     const oldImageId2 = image2Select.value;
 
+    resetMatchState();
+
     await fetch(`/api/set_source/${newSource}`, { method: 'POST' });
     await fetchImages();
 
@@ -365,22 +374,23 @@ sourceSelect.addEventListener('change', async () => {
     }
 
     if (oldImageId1 && oldImageId2) {
-        currentMatches = { inlier: [], outlier: [] };
-        if (linesVisible || onlyShowMatched) {
+        const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
+        if (wantsMatches && image1Select.value && image2Select.value) {
             await handleFetchMatches();
         }
-        // Redraw canvases to update markers based on new matches
-        redrawCanvas(image1Canvas, ctx1, "image1");
-        redrawCanvas(image2Canvas, ctx2, "image2");
-        drawMatches();
     }
+
+    // Redraw canvases to update markers based on new matches or reset state
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+    drawMatches();
 });
 
 image1Select.addEventListener("change", async () => {
     const imageId1 = image1Select.value;
     const oldImageId2 = image2Select.value;
 
-    currentMatches = { inlier: [], outlier: [] };
+    resetMatchState();
 
     await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, imageId1, true);
     await updateImage2List();
@@ -388,7 +398,8 @@ image1Select.addEventListener("change", async () => {
     const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
     if (oldImageId2 && newImage2Options.includes(oldImageId2)) {
         image2Select.value = oldImageId2;
-        if (linesVisible || onlyShowMatched) {
+        const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
+        if (wantsMatches && image1Select.value && image2Select.value) {
             await handleFetchMatches();
         }
         redrawCanvas(image1Canvas, ctx1, "image1");
@@ -402,10 +413,12 @@ image1Select.addEventListener("change", async () => {
 });
 
 image2Select.addEventListener("change", async () => {
-    await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
-    currentMatches = { inlier: [], outlier: [] };
+    resetMatchState();
 
-    if (linesVisible || onlyShowMatched) {
+    await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
+
+    const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
+    if (wantsMatches && image1Select.value && image2Select.value) {
         await handleFetchMatches();
     }
 
@@ -467,6 +480,8 @@ async function handleFetchMatches() {
         return false;
     }
 
+    resetMatchState();
+
     const showInliers = showInlierMatchesCheckbox.checked;
     const showOutliers = showWrongMatchesCheckbox.checked;
 
@@ -487,10 +502,7 @@ async function handleFetchMatches() {
     }
 
     if (inlierMatches === null || outlierMatches === null) {
-        currentMatches = [];
-        matches_map_img2_to_img1 = new Map();
-        matchedIndices1 = new Set();
-        matchedIndices2 = new Set();
+        resetMatchState();
         return false;
     }
 
