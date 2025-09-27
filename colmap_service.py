@@ -284,6 +284,19 @@ class ColmapService:
         return matches
 
     def get_match_summary(self, image_id1: int, image_id2: int) -> Dict[str, Any]:
+        if self.active_source == DataSource.SFM_MODEL:
+            matches = self._get_matches_from_recon(image_id1, image_id2)
+            return {
+                "available": True,
+                "total_matches": len(matches) if matches is not None else 0,
+                "inlier_count": None,
+                "outlier_count": None,
+                "two_view_configuration": None,
+                "two_view_configuration_id": None,
+                "two_view_geometry_available": False,
+                "reason": None
+            }
+
         if self.active_source != DataSource.DATABASE or not self.db:
             return {
                 "available": False,

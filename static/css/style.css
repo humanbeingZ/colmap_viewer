@@ -106,7 +106,7 @@ body {
 .match-summary-value {
     font-size: inherit;
     color: inherit;
-    padding-left: 8px;
+    padding-left: 4px;
 }
 
 .match-summary-note {

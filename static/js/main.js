@@ -67,10 +67,13 @@ function renderMatchSummary(summary) {
     matchSummaryContent.innerHTML = "";
 
     const stats = [
-        { label: "Total matches: ", value: summary.total_matches ?? "N/A" },
-        { label: "Inlier matches: ", value: summary.inlier_count ?? "N/A" },
-        { label: "Outlier matches: ", value: summary.outlier_count ?? "N/A" },
+        { label: "total matches:", value: summary.total_matches ?? "N/A" },
     ];
+
+    if (summary.inlier_count !== null) {
+        stats.push({ label: "inlier matches:", value: summary.inlier_count ?? "N/A" });
+        stats.push({ label: "outlier matches:", value: summary.outlier_count ?? "N/A" });
+    }
 
     stats.forEach(({ label, value }) => {
         const row = document.createElement("div");
@@ -89,26 +92,26 @@ function renderMatchSummary(summary) {
         matchSummaryContent.appendChild(row);
     });
 
-    const configurationRow = document.createElement("div");
-    configurationRow.classList.add("match-summary-item");
-    configurationRow.style.flexDirection = "column";
+    if (summary.two_view_geometry_available) {
+        const configurationRow = document.createElement("div");
+        configurationRow.classList.add("match-summary-item");
+        configurationRow.style.flexDirection = "column";
 
-    const configurationLabel = document.createElement("span");
-    configurationLabel.classList.add("match-summary-label");
-    configurationLabel.textContent = "two-view configuration: ";
-    configurationRow.appendChild(configurationLabel);
+        const configurationLabel = document.createElement("span");
+        configurationLabel.classList.add("match-summary-label");
+        configurationLabel.textContent = "two-view configuration:";
+        configurationRow.appendChild(configurationLabel);
 
-    const configurationValue = document.createElement("span");
-    configurationValue.classList.add("match-summary-value");
-    configurationValue.style.paddingLeft = "0px";
-    const configurationText = summary.two_view_geometry_available
-        ? (summary.two_view_configuration || "Unknown")
-        : "not available";
-    configurationValue.textContent = configurationText;
-    configurationRow.appendChild(configurationValue);
-    matchSummaryContent.appendChild(configurationRow);
+        const configurationValue = document.createElement("span");
+        configurationValue.classList.add("match-summary-value");
+        configurationValue.style.paddingLeft = "0px";
+        const configurationText = summary.two_view_configuration || "Unknown";
+        configurationValue.textContent = configurationText;
+        configurationRow.appendChild(configurationValue);
+        matchSummaryContent.appendChild(configurationRow);
+    }
 
-    if (!summary.two_view_geometry_available && summary.reason) {
+    if (summary.reason) {
         const note = document.createElement("p");
         note.classList.add("match-summary-note");
         note.textContent = summary.reason;
