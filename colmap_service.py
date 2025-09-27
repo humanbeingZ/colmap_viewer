@@ -9,6 +9,20 @@ class DataSource(Enum):
     DATABASE = "Database"
 
 
+TWO_VIEW_CONFIGURATION_LABELS = {
+    0: "Undefined",
+    1: "Degenerate",
+    2: "Calibrated",
+    3: "Uncalibrated",
+    4: "Planar",
+    5: "Panoramic",
+    6: "Planar or Panoramic",
+    7: "Watermark",
+    8: "Multiple",
+    9: "Calibrated Rig",
+}
+
+
 class ColmapService:
     def __init__(self, image_path: str, project_path: Optional[str] = None, db_path: Optional[str] = None):
         self.image_base_path = image_path
@@ -268,3 +282,81 @@ class ColmapService:
                 matches.append([i1, i2])
 
         return matches
+
+    def get_match_summary(self, image_id1: int, image_id2: int) -> Dict[str, Any]:
+        if self.active_source != DataSource.DATABASE or not self.db:
+            return {
+                "available": False,
+                "reason": "Two-view geometry details are only available when using a COLMAP database data source."
+            }
+
+        matches = None
+        try:
+            matches = self.db.read_matches(image_id1, image_id2)
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"Unable to read matches from database: {exc}",
+                "total_matches": None,
+                "inlier_count": None,
+                "outlier_count": None,
+                "two_view_configuration": None,
+                "two_view_configuration_id": None,
+                "two_view_geometry_available": False,
+            }
+
+        total_matches = 0
+        if matches is not None:
+            try:
+                total_matches = len(matches)
+            except TypeError:
+                total_matches = getattr(matches, "size", 0) or 0
+
+        two_view_geometry = None
+        two_view_error: Optional[str] = None
+        try:
+            two_view_geometry = self.db.read_two_view_geometry(image_id1, image_id2)
+        except Exception as exc:
+            two_view_error = str(exc)
+
+        inlier_count = None
+        configuration = None
+        configuration_id = None
+
+        if two_view_geometry is not None:
+            configuration_id = getattr(two_view_geometry, "config", None)
+            configuration = TWO_VIEW_CONFIGURATION_LABELS.get(configuration_id, "Unknown")
+            inlier_matches = getattr(two_view_geometry, "inlier_matches", None)
+            if inlier_matches is not None:
+                try:
+                    inlier_count = len(inlier_matches)
+                except TypeError:
+                    if hasattr(inlier_matches, "shape") and len(inlier_matches.shape) > 0:
+                        inlier_count = inlier_matches.shape[0]
+                    else:
+                        inlier_count = None
+
+        outlier_count = None
+        if total_matches is not None and inlier_count is not None:
+            outlier_count = max(total_matches - inlier_count, 0)
+
+        has_two_view_info = two_view_geometry is not None
+
+        summary: Dict[str, Any] = {
+            "available": True,
+            "total_matches": total_matches,
+            "inlier_count": inlier_count,
+            "outlier_count": outlier_count,
+            "two_view_configuration": configuration if has_two_view_info else None,
+            "two_view_configuration_id": configuration_id,
+            "two_view_geometry_available": has_two_view_info,
+        }
+
+        if two_view_error:
+            summary["two_view_geometry_available"] = False
+            summary["reason"] = f"Unable to read two-view geometry from database: {two_view_error}"
+        elif not has_two_view_info:
+            summary["two_view_geometry_available"] = False
+            summary["reason"] = "No two-view geometry entry found in database for this image pair."
+
+        return summary

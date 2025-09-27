@@ -108,6 +108,11 @@ async def get_matches(image_id1: int, image_id2: int, match_type: Optional[str] 
     return matches
 
 
+@app.get("/api/match_summary/{image_id1}/{image_id2}")
+async def get_match_summary(image_id1: int, image_id2: int):
+    return colmap_service.get_match_summary(image_id1, image_id2)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_base_path", type=str, required=True)

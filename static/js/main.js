@@ -11,6 +11,7 @@ const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
 const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
 const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
 const resetViewButton = document.getElementById("reset-view");
+const matchSummaryContent = document.getElementById("match-summary-content");
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
@@ -31,12 +32,114 @@ let matchedIndices1 = new Set();
 let matchedIndices2 = new Set();
 let image1Colors = [];
 let matches_map_img2_to_img1 = new Map();
+let currentMatchSummary = null;
 
 function resetMatchState() {
     currentMatches = { inlier: [], outlier: [] };
     matches_map_img2_to_img1 = new Map();
     matchedIndices1 = new Set();
     matchedIndices2 = new Set();
+}
+
+function setMatchSummaryMessage(message) {
+    if (!matchSummaryContent) {
+        return;
+    }
+    matchSummaryContent.textContent = message;
+}
+
+function clearMatchSummary(message = "Select two images to see match statistics.") {
+    currentMatchSummary = null;
+    setMatchSummaryMessage(message);
+}
+
+function renderMatchSummary(summary) {
+    if (!matchSummaryContent) {
+        return;
+    }
+
+    if (!summary || !summary.available) {
+        const reason = summary && summary.reason ? summary.reason : "Match statistics unavailable.";
+        setMatchSummaryMessage(reason);
+        return;
+    }
+
+    matchSummaryContent.innerHTML = "";
+
+    const stats = [
+        { label: "Total matches: ", value: summary.total_matches ?? "N/A" },
+        { label: "Inlier matches: ", value: summary.inlier_count ?? "N/A" },
+        { label: "Outlier matches: ", value: summary.outlier_count ?? "N/A" },
+    ];
+
+    stats.forEach(({ label, value }) => {
+        const row = document.createElement("div");
+        row.classList.add("match-summary-item");
+
+        const labelElement = document.createElement("span");
+        labelElement.classList.add("match-summary-label");
+        labelElement.textContent = label;
+        row.appendChild(labelElement);
+
+        const valueElement = document.createElement("span");
+        valueElement.classList.add("match-summary-value");
+        valueElement.textContent = value;
+        row.appendChild(valueElement);
+
+        matchSummaryContent.appendChild(row);
+    });
+
+    const configurationRow = document.createElement("div");
+    configurationRow.classList.add("match-summary-item");
+    configurationRow.style.flexDirection = "column";
+
+    const configurationLabel = document.createElement("span");
+    configurationLabel.classList.add("match-summary-label");
+    configurationLabel.textContent = "two-view configuration: ";
+    configurationRow.appendChild(configurationLabel);
+
+    const configurationValue = document.createElement("span");
+    configurationValue.classList.add("match-summary-value");
+    configurationValue.style.paddingLeft = "0px";
+    const configurationText = summary.two_view_geometry_available
+        ? (summary.two_view_configuration || "Unknown")
+        : "not available";
+    configurationValue.textContent = configurationText;
+    configurationRow.appendChild(configurationValue);
+    matchSummaryContent.appendChild(configurationRow);
+
+    if (!summary.two_view_geometry_available && summary.reason) {
+        const note = document.createElement("p");
+        note.classList.add("match-summary-note");
+        note.textContent = summary.reason;
+        matchSummaryContent.appendChild(note);
+    }
+}
+
+async function updateMatchSummary() {
+    if (!matchSummaryContent) {
+        return null;
+    }
+
+    const imageId1 = image1Select.value;
+    const imageId2 = image2Select.value;
+
+    if (!imageId1 || !imageId2) {
+        clearMatchSummary();
+        return null;
+    }
+
+    setMatchSummaryMessage("Loading match statistics...");
+
+    const summary = await fetchMatchSummary(imageId1, imageId2);
+    if (!summary) {
+        setMatchSummaryMessage("Unable to load match statistics.");
+        return null;
+    }
+
+    currentMatchSummary = summary;
+    renderMatchSummary(summary);
+    return summary;
 }
 
 const canvasStates = {
@@ -151,6 +254,19 @@ async function fetchMatches(imageId1, imageId2, matchType = null) {
         return await response.json();
     } catch (error) {
         console.error("Error fetching matches:", error);
+        return null;
+    }
+}
+
+async function fetchMatchSummary(imageId1, imageId2) {
+    try {
+        const response = await fetch(`/api/match_summary/${imageId1}/${imageId2}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Error fetching match summary:", error);
         return null;
     }
 }
@@ -359,6 +475,7 @@ sourceSelect.addEventListener('change', async () => {
     const oldImageId2 = image2Select.value;
 
     resetMatchState();
+    clearMatchSummary();
 
     await fetch(`/api/set_source/${newSource}`, { method: 'POST' });
     await fetchImages();
@@ -373,11 +490,17 @@ sourceSelect.addEventListener('change', async () => {
         await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, oldImageId2, false);
     }
 
-    if (oldImageId1 && oldImageId2) {
-        const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-        if (wantsMatches && image1Select.value && image2Select.value) {
+    const hasPair = Boolean(image1Select.value && image2Select.value);
+    const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
+
+    if (hasPair) {
+        if (wantsMatches) {
             await handleFetchMatches();
+        } else {
+            await updateMatchSummary();
         }
+    } else {
+        clearMatchSummary();
     }
 
     // Redraw canvases to update markers based on new matches or reset state
@@ -398,9 +521,16 @@ image1Select.addEventListener("change", async () => {
     const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
     if (oldImageId2 && newImage2Options.includes(oldImageId2)) {
         image2Select.value = oldImageId2;
+        const hasPair = Boolean(image1Select.value && image2Select.value);
         const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-        if (wantsMatches && image1Select.value && image2Select.value) {
-            await handleFetchMatches();
+        if (hasPair) {
+            if (wantsMatches) {
+                await handleFetchMatches();
+            } else {
+                await updateMatchSummary();
+            }
+        } else {
+            clearMatchSummary();
         }
         redrawCanvas(image1Canvas, ctx1, "image1");
         redrawCanvas(image2Canvas, ctx2, "image2");
@@ -408,6 +538,7 @@ image1Select.addEventListener("change", async () => {
     } else {
         image2Select.value = "";
         await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, null, false);
+        clearMatchSummary();
         drawMatches();
     }
 });
@@ -417,9 +548,16 @@ image2Select.addEventListener("change", async () => {
 
     await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
 
+    const hasPair = Boolean(image1Select.value && image2Select.value);
     const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-    if (wantsMatches && image1Select.value && image2Select.value) {
-        await handleFetchMatches();
+    if (hasPair) {
+        if (wantsMatches) {
+            await handleFetchMatches();
+        } else {
+            await updateMatchSummary();
+        }
+    } else {
+        clearMatchSummary();
     }
 
     redrawCanvas(image1Canvas, ctx1, "image1");
@@ -480,6 +618,7 @@ async function handleFetchMatches() {
         return false;
     }
 
+    clearMatchSummary("Loading match statistics...");
     resetMatchState();
 
     const showInliers = showInlierMatchesCheckbox.checked;
@@ -503,6 +642,7 @@ async function handleFetchMatches() {
 
     if (inlierMatches === null || outlierMatches === null) {
         resetMatchState();
+        await updateMatchSummary();
         return false;
     }
 
@@ -516,6 +656,7 @@ async function handleFetchMatches() {
     matches_map_img2_to_img1 = new Map(allCombinedMatches.map((m) => [m[1], m[0]]));
     matchedIndices1 = new Set(allCombinedMatches.map((m) => m[0]));
     matchedIndices2 = new Set(allCombinedMatches.map((m) => m[1]));
+    await updateMatchSummary();
     return true;
 }
 
