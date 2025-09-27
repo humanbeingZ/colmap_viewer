@@ -180,7 +180,23 @@ class ColmapService:
             image_ids = {img['id'] for img in all_images}
             matched_image_ids = []
             for other_image_id in image_ids:
-                if image_id != other_image_id and self.db.exists_matches(image_id, other_image_id):
+                if image_id == other_image_id:
+                    continue
+
+                if not self.db.exists_matches(image_id, other_image_id):
+                    continue
+
+                matches = self.db.read_matches(image_id, other_image_id)
+                if matches is None:
+                    continue
+
+                try:
+                    has_matches = len(matches) > 0
+                except TypeError:
+                    # Some pycolmap versions return objects without __len__; fall back to size
+                    has_matches = getattr(matches, "size", 0) > 0
+
+                if has_matches:
                     matched_image_ids.append(other_image_id)
             return matched_image_ids
         elif self.reconstruction:
