@@ -3,3 +3,4 @@ uvicorn
 pycolmap
 numpy
 Pillow
+jinja2
