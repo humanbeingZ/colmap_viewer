@@ -115,10 +115,10 @@ async def get_match_summary(image_id1: int, image_id2: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image_base_path", type=str, required=True)
-    parser.add_argument("--colmap_project_path", type=str, default=None)
-    parser.add_argument("--database_path", type=str, default=None)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("-i", "--image_base_path", type=str, required=True)
+    parser.add_argument("-c", "--colmap_project_path", type=str, default=None)
+    parser.add_argument("-d", "--database_path", type=str, default=None)
+    parser.add_argument("-p", "--port", type=int, default=8000)
     args = parser.parse_args()
 
     if not args.colmap_project_path and not args.database_path:

@@ -42,6 +42,16 @@ Alternatively, you can provide a path to a COLMAP database file:
 python main.py --image_base_path /path/to/your/images --database_path /path/to/your/colmap/database.db
 ```
 
+You can also use shorter aliases for the arguments:
+
+```bash
+python main.py -i /path/to/your/images -c /path/to/your/colmap/project
+```
+
+```bash
+python main.py -i /path/to/your/images -d /path/to/your/colmap/database.db
+```
+
 Then, open your web browser and navigate to `http://localhost:8000`.
 
 ## UI Overview
