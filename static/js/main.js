@@ -753,6 +753,52 @@ window.addEventListener("resize", () => {
     drawMatches();
 });
 
+window.addEventListener("keydown", (e) => {
+    // Check if a dropdown is focused
+    if (document.activeElement.tagName === "SELECT") {
+        return;
+    }
+
+    if (
+        e.key === "ArrowRight" ||
+        e.key === "ArrowDown" ||
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowUp"
+    ) {
+        e.preventDefault();
+
+        const imageId1 = image1Select.value;
+        if (!imageId1) {
+            return;
+        }
+
+        const currentIndex = image2Select.selectedIndex;
+        const numOptions = image2Select.options.length;
+
+        if (numOptions <= 1) {
+            return;
+        }
+
+        let nextIndex;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+            nextIndex = currentIndex + 1;
+            if (nextIndex >= numOptions) {
+                nextIndex = 1; // Wrap around to the first image, skipping the placeholder
+            }
+        } else { // ArrowLeft or ArrowUp
+            nextIndex = currentIndex - 1;
+            if (nextIndex < 1) {
+                nextIndex = numOptions - 1; // Wrap around to the last image
+            }
+        }
+
+        if (nextIndex !== currentIndex) {
+            image2Select.selectedIndex = nextIndex;
+            image2Select.dispatchEvent(new Event("change"));
+        }
+    }
+});
+
 // --- Utility Functions ---
 
 function getColor(index, alpha = 1.0) {
