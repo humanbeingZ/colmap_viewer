@@ -30,6 +30,10 @@ let onlyShowMatched = false;
 let linesVisible = false;
 let matchedIndices1 = new Set();
 let matchedIndices2 = new Set();
+let inlierMatchedIndices1 = new Set();
+let inlierMatchedIndices2 = new Set();
+let outlierMatchedIndices1 = new Set();
+let outlierMatchedIndices2 = new Set();
 let image1Colors = [];
 let matches_map_img2_to_img1 = new Map();
 let currentMatchSummary = null;
@@ -39,6 +43,10 @@ function resetMatchState() {
     matches_map_img2_to_img1 = new Map();
     matchedIndices1 = new Set();
     matchedIndices2 = new Set();
+    inlierMatchedIndices1 = new Set();
+    inlierMatchedIndices2 = new Set();
+    outlierMatchedIndices1 = new Set();
+    outlierMatchedIndices2 = new Set();
 }
 
 function setMatchSummaryMessage(message) {
@@ -162,22 +170,16 @@ async function init() {
 
 // --- API Functions ---
 
-showInlierMatchesCheckbox.addEventListener("change", async () => {
-    if (image1Select.value && image2Select.value) {
-        await handleFetchMatches();
-        redrawCanvas(image1Canvas, ctx1, "image1");
-        redrawCanvas(image2Canvas, ctx2, "image2");
-        drawMatches();
-    }
+showInlierMatchesCheckbox.addEventListener("change", () => {
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+    drawMatches();
 });
 
-showWrongMatchesCheckbox.addEventListener("change", async () => {
-    if (image1Select.value && image2Select.value) {
-        await handleFetchMatches();
-        redrawCanvas(image1Canvas, ctx1, "image1");
-        redrawCanvas(image2Canvas, ctx2, "image2");
-        drawMatches();
-    }
+showWrongMatchesCheckbox.addEventListener("change", () => {
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+    drawMatches();
 });
 
 async function initializeSources() {
@@ -398,10 +400,24 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
 
     points.forEach((p, index) => {
         if (onlyShowMatched) {
-            if (canvasKey === "image1" && !matchedIndices1.has(index)) {
-                return;
+            let shouldDraw = false;
+            if (showInlierMatchesCheckbox.checked) {
+                if (canvasKey === "image1" && inlierMatchedIndices1.has(index)) {
+                    shouldDraw = true;
+                }
+                if (canvasKey === "image2" && inlierMatchedIndices2.has(index)) {
+                    shouldDraw = true;
+                }
             }
-            if (canvasKey === "image2" && !matchedIndices2.has(index)) {
+            if (showWrongMatchesCheckbox.checked) {
+                if (canvasKey === "image1" && outlierMatchedIndices1.has(index)) {
+                    shouldDraw = true;
+                }
+                if (canvasKey === "image2" && outlierMatchedIndices2.has(index)) {
+                    shouldDraw = true;
+                }
+            }
+            if (!shouldDraw) {
                 return;
             }
         }
@@ -436,38 +452,42 @@ function drawMatches() {
     matchCtx.lineWidth = 1;
 
     // Draw inlier matches in green
-    matchCtx.strokeStyle = "rgba(0, 255, 0, 0.5)";
-    currentMatches.inlier.forEach((match) => {
-        const p1 = currentImage1Data.points2D[match[0]];
-        const p2 = currentImage2Data.points2D[match[1]];
+    if (showInlierMatchesCheckbox.checked) {
+        matchCtx.strokeStyle = "rgba(0, 255, 0, 0.5)";
+        currentMatches.inlier.forEach((match) => {
+            const p1 = currentImage1Data.points2D[match[0]];
+            const p2 = currentImage2Data.points2D[match[1]];
 
-        if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
-            const p1Canvas = imageToCanvas(p1, "image1");
-            const p2Canvas = imageToCanvas(p2, "image2");
+            if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
+                const p1Canvas = imageToCanvas(p1, "image1");
+                const p2Canvas = imageToCanvas(p2, "image2");
 
-            matchCtx.beginPath();
-            matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
-            matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
-            matchCtx.stroke();
-        }
-    });
+                matchCtx.beginPath();
+                matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
+                matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
+                matchCtx.stroke();
+            }
+        });
+    }
 
     // Draw outlier matches in red
-    matchCtx.strokeStyle = "rgba(255, 0, 0, 0.5)";
-    currentMatches.outlier.forEach((match) => {
-        const p1 = currentImage1Data.points2D[match[0]];
-        const p2 = currentImage2Data.points2D[match[1]];
+    if (showWrongMatchesCheckbox.checked) {
+        matchCtx.strokeStyle = "rgba(255, 0, 0, 0.5)";
+        currentMatches.outlier.forEach((match) => {
+            const p1 = currentImage1Data.points2D[match[0]];
+            const p2 = currentImage2Data.points2D[match[1]];
 
-        if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
-            const p1Canvas = imageToCanvas(p1, "image1");
-            const p2Canvas = imageToCanvas(p2, "image2");
+            if (p1 && p2 && isPointVisible(p1, "image1") && isPointVisible(p2, "image2")) {
+                const p1Canvas = imageToCanvas(p1, "image1");
+                const p2Canvas = imageToCanvas(p2, "image2");
 
-            matchCtx.beginPath();
-            matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
-            matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
-            matchCtx.stroke();
-        }
-    });
+                matchCtx.beginPath();
+                matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
+                matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
+                matchCtx.stroke();
+            }
+        });
+    }
 }
 
 // --- Event Handlers ---
@@ -624,24 +644,8 @@ async function handleFetchMatches() {
     clearMatchSummary("Loading match statistics...");
     resetMatchState();
 
-    const showInliers = showInlierMatchesCheckbox.checked;
-    const showOutliers = showWrongMatchesCheckbox.checked;
-
-    let inlierMatches = [];
-    let outlierMatches = [];
-
-    if (showInliers || showOutliers) {
-        if (showInliers) {
-            inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
-        }
-        if (showOutliers) {
-            outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
-        }
-    } else {
-        // If neither is checked, do not fetch any matches.
-        inlierMatches = [];
-        outlierMatches = [];
-    }
+    const inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
+    const outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
 
     if (inlierMatches === null || outlierMatches === null) {
         resetMatchState();
@@ -653,6 +657,16 @@ async function handleFetchMatches() {
         inlier: inlierMatches || [],
         outlier: outlierMatches || []
     };
+
+    // Populate the index sets for inliers and outliers
+    currentMatches.inlier.forEach(match => {
+        inlierMatchedIndices1.add(match[0]);
+        inlierMatchedIndices2.add(match[1]);
+    });
+    currentMatches.outlier.forEach(match => {
+        outlierMatchedIndices1.add(match[0]);
+        outlierMatchedIndices2.add(match[1]);
+    });
 
     const allCombinedMatches = [...currentMatches.inlier, ...currentMatches.outlier];
 
