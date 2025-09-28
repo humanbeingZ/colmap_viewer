@@ -12,6 +12,7 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
 *   **Feature Matching:** Visualize feature matches between two images.
 *   **Inlier/Outlier Filtering:** Filter matches to show only inliers or outliers.
 *   **Interactive Controls:** Pan and zoom within the images.
+*   **Keyboard Navigation:** Use arrow keys (Up/Down/Left/Right) to quickly cycle through the second image in a pair.
 *   **Match Statistics:** View a summary of match statistics, including the number of total, inlier, and outlier matches, and the two-view configuration.
 *   **Multiple Data Sources:** Supports loading data from either a COLMAP project folder or a database file.
 
@@ -60,7 +61,7 @@ The user interface consists of a control panel on the left and a viewer on the r
 
 *   **Control Panel:**
     *   **Data Source:** Select the data source (if multiple are available).
-    *   **Image Selection:** Select the two images to compare.
+    *   **Image Selection:** Select the two images to compare. You can also use the arrow keys (Up/Down/Left/Right) to cycle through the second image list.
     *   **Display Options:**
         *   **Show Markers:** Toggle the visibility of feature markers.
         *   **Show only matched markers:** Show only the markers that have a match in the other image.
