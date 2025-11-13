@@ -773,33 +773,21 @@ window.addEventListener("keydown", (e) => {
         return;
     }
 
-    if (
-        e.key === "ArrowRight" ||
-        e.key === "ArrowDown" ||
-        e.key === "ArrowLeft" ||
-        e.key === "ArrowUp"
-    ) {
-        e.preventDefault();
-
-        const imageId1 = image1Select.value;
-        if (!imageId1) {
-            return;
-        }
-
-        const currentIndex = image2Select.selectedIndex;
-        const numOptions = image2Select.options.length;
+    const cycleSelect = (selectElement, direction) => {
+        const currentIndex = selectElement.selectedIndex;
+        const numOptions = selectElement.options.length;
 
         if (numOptions <= 1) {
             return;
         }
 
         let nextIndex;
-        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        if (direction === "forward") {
             nextIndex = currentIndex + 1;
             if (nextIndex >= numOptions) {
                 nextIndex = 1; // Wrap around to the first image, skipping the placeholder
             }
-        } else { // ArrowLeft or ArrowUp
+        } else { // "backward"
             nextIndex = currentIndex - 1;
             if (nextIndex < 1) {
                 nextIndex = numOptions - 1; // Wrap around to the last image
@@ -807,9 +795,32 @@ window.addEventListener("keydown", (e) => {
         }
 
         if (nextIndex !== currentIndex) {
-            image2Select.selectedIndex = nextIndex;
-            image2Select.dispatchEvent(new Event("change"));
+            selectElement.selectedIndex = nextIndex;
+            selectElement.dispatchEvent(new Event("change"));
         }
+    };
+
+    switch (e.key) {
+        case "ArrowLeft":
+            e.preventDefault();
+            cycleSelect(image1Select, "backward");
+            break;
+        case "ArrowRight":
+            e.preventDefault();
+            cycleSelect(image1Select, "forward");
+            break;
+        case "ArrowUp":
+            e.preventDefault();
+            if (image1Select.value) {
+                cycleSelect(image2Select, "backward");
+            }
+            break;
+        case "ArrowDown":
+            e.preventDefault();
+            if (image1Select.value) {
+                cycleSelect(image2Select, "forward");
+            }
+            break;
     }
 });
 
