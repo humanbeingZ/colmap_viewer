@@ -1,6 +1,7 @@
 # COLMAP Viewer
 
-This is a web-based tool for visualizing COLMAP data, including images, feature matches, and epipolar lines.
+This is a web-based tool for visualizing COLMAP data, including images,
+feature matches, and independent 3D point reprojections.
 
 ## Description
 
@@ -15,6 +16,8 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
 *   **Keyboard Navigation:** Use arrow keys (Up/Down/Left/Right) to quickly cycle through the second image in a pair.
 *   **Match Statistics:** View a summary of match statistics, including the number of total, inlier, and outlier matches, and the two-view configuration.
 *   **Multiple Data Sources:** Supports loading data from either a COLMAP project folder or a database file.
+*   **Geometry-only Reprojection:** Render every point in `points3D` through a registered camera without using feature observations or tracks.
+*   **Reprojection Comparison:** Compare the rendered point cloud and stored image pixels using a draggable split or side-by-side layout. Hold `Alt` and use the mouse wheel over the viewer to change rendered point size.
 
 ## Installation
 
@@ -60,6 +63,7 @@ Then, open your web browser and navigate to `http://localhost:8000`.
 The user interface consists of a control panel on the left and a viewer on the right.
 
 *   **Control Panel:**
+    *   **Viewer Mode:** Switch between feature-match inspection and 3D reprojection.
     *   **Data Source:** Select the data source (if multiple are available).
     *   **Image Selection:** Select the two images to compare. You can also use the arrow keys (Up/Down/Left/Right) to cycle through the second image list.
     *   **Display Options:**
@@ -75,6 +79,23 @@ The user interface consists of a control panel on the left and a viewer on the r
 *   **Viewer:**
     *   Displays the two selected images side-by-side.
     *   Overlays feature markers and match lines on the images.
+    *   In 3D reprojection mode, displays a draggable render/input split or a side-by-side comparison. Arrow keys select the previous or next registered image.
+
+## 3D Reprojection Mode
+
+Start the viewer with `--colmap_project_path` pointing to a sparse model that
+contains `cameras`, `images`, and `points3D` files. Select **3D reprojection**
+from the **Viewer Mode** menu. The point render uses only:
+
+* camera intrinsics and distortion model;
+* registered world-to-camera pose;
+* 3D point coordinates and colors; and
+* source image pixels.
+
+It does not use `POINTS2D`, point tracks, extracted features, matches, or a
+COLMAP database. The input image is decoded without applying EXIF orientation,
+and the orientation menu can be used to test horizontal/vertical flips and a
+180-degree rotation.
 
 ## API Endpoints
 
@@ -83,6 +104,10 @@ The following API endpoints are available:
 *   `GET /`: Serves the main HTML page.
 *   `GET /serve_image/{image_path:path}`: Serves an image file.
 *   `GET /api/sources`: Returns a list of available data sources.
+*   `GET /api/capabilities`: Reports whether 3D reprojection is available.
+*   `GET /api/reprojection/images`: Lists registered reconstruction images.
+*   `GET /api/reprojection/{image_id}/input`: Returns normalized input pixels for comparison.
+*   `GET /api/reprojection/{image_id}/render`: Returns a z-buffered geometric point rendering.
 *   `POST /api/set_source/{source_name}`: Sets the active data source.
 *   `GET /api/images`: Returns a list of all images.
 *   `GET /api/image_data/{image_id}`: Returns the data for a single image, including feature points.

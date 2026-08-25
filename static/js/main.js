@@ -762,12 +762,18 @@ function handleMouseOut(e) {
 });
 
 window.addEventListener("resize", () => {
+    if (document.body.dataset.viewerMode === "reprojection") {
+        return;
+    }
     drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
     drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
     drawMatches();
 });
 
 window.addEventListener("keydown", (e) => {
+    if (document.body.dataset.viewerMode === "reprojection") {
+        return;
+    }
     // Check if a dropdown is focused
     if (document.activeElement.tagName === "SELECT") {
         return;

@@ -2,5 +2,7 @@ fastapi
 uvicorn
 pycolmap
 numpy
+numexpr
+opencv-python-headless
 Pillow
 jinja2

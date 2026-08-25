@@ -10,48 +10,98 @@
     <div class="container">
         <div class="controls">
             <h1>COLMAP Viewer</h1>
-            <div class="source-selection" style="display: none;">
-                <label for="source-select">Data Source:</label>
-                <select id="source-select"></select>
+            <div class="viewer-mode-selection">
+                <label for="viewer-mode-select">Viewer Mode:</label>
+                <select id="viewer-mode-select">
+                    <option value="matches">Feature matches</option>
+                    <option value="reprojection">3D reprojection</option>
+                </select>
             </div>
-            <div class="image-selection">
-                <label for="image1-select">Image 1:</label>
-                <select id="image1-select"></select>
-                <label for="image2-select">Image 2:</label>
-                <select id="image2-select"></select>
-            </div>
-            <div class="display-options">
-                <label>
-                    <input type="checkbox" id="show-markers" checked> Show Markers
-                </label>
-
-                <label>
-                    <input type="checkbox" id="show-only-matched"> Show only matched markers
-                </label>
-
-                <div class="match-type-options" style="font-size: 0.9em; color: gray; display: flex; align-items: center;">
-                    <span style="font-weight: normal; margin-right: 10px;">Match Type:</span>
-                    <label style="margin-right: 10px; font-weight: normal;">
-                        <input type="checkbox" id="show-inlier-matches" checked> Inlier
+            <div id="matching-controls">
+                <div class="source-selection" style="display: none;">
+                    <label for="source-select">Data Source:</label>
+                    <select id="source-select"></select>
+                </div>
+                <div class="image-selection">
+                    <label for="image1-select">Image 1:</label>
+                    <select id="image1-select"></select>
+                    <label for="image2-select">Image 2:</label>
+                    <select id="image2-select"></select>
+                </div>
+                <div class="display-options">
+                    <label>
+                        <input type="checkbox" id="show-markers" checked> Show Markers
                     </label>
-                    <label style="font-weight: normal;">
-                        <input type="checkbox" id="show-wrong-matches"> Outlier
+
+                    <label>
+                        <input type="checkbox" id="show-only-matched"> Show only matched markers
                     </label>
+
+                    <div class="match-type-options" style="font-size: 0.9em; color: gray; display: flex; align-items: center;">
+                        <span style="font-weight: normal; margin-right: 10px;">Match Type:</span>
+                        <label style="margin-right: 10px; font-weight: normal;">
+                            <input type="checkbox" id="show-inlier-matches" checked> Inlier
+                        </label>
+                        <label style="font-weight: normal;">
+                            <input type="checkbox" id="show-wrong-matches"> Outlier
+                        </label>
+                    </div>
+                </div>
+                <div class="action-buttons">
+                    <button id="draw-matches">Draw Matches</button>
+                    <button id="draw-epipolar">Draw Epipolar Lines</button>
+                    <button id="reset-view">Reset View</button>
+                </div>
+                <div class="match-summary" id="match-summary">
+                    <div class="match-summary-title">Match Summary</div>
+                    <div id="match-summary-content" class="match-summary-body">
+                        Select two images to see match statistics.
+                    </div>
                 </div>
             </div>
-            <div class="action-buttons">
-                <button id="draw-matches">Draw Matches</button>
-                <button id="draw-epipolar">Draw Epipolar Lines</button>
-                <button id="reset-view">Reset View</button>
-            </div>
-            <div class="match-summary" id="match-summary">
-                <div class="match-summary-title">Match Summary</div>
-                <div id="match-summary-content" class="match-summary-body">
-                    Select two images to see match statistics.
+
+            <div id="reprojection-controls" hidden>
+                <div class="image-selection">
+                    <label for="reprojection-image-select">Registered image:</label>
+                    <select id="reprojection-image-select"></select>
+                    <div class="reprojection-navigation">
+                        <button id="reprojection-prev" title="Previous image">&#9664; Previous</button>
+                        <button id="reprojection-next" title="Next image">Next &#9654;</button>
+                    </div>
+                </div>
+                <div class="display-options reprojection-options">
+                    <label for="reprojection-layout">Layout:</label>
+                    <select id="reprojection-layout">
+                        <option value="split">Draggable split</option>
+                        <option value="side">Side by side</option>
+                    </select>
+                    <label for="reprojection-color">Point color:</label>
+                    <select id="reprojection-color">
+                        <option value="rgb">Point RGB</option>
+                        <option value="depth">Depth</option>
+                        <option value="white">White</option>
+                    </select>
+                    <label for="reprojection-point-size">Point size (Alt + wheel):</label>
+                    <div class="reprojection-point-size-control">
+                        <input id="reprojection-point-size" type="number"
+                               value="3" min="1" max="15" step="2">
+                        <span>px</span>
+                    </div>
+                    <label for="reprojection-flip">Input orientation test:</label>
+                    <select id="reprojection-flip">
+                        <option value="none">Unchanged</option>
+                        <option value="horizontal">Flip horizontal</option>
+                        <option value="vertical">Flip vertical</option>
+                        <option value="both">Rotate 180&deg;</option>
+                    </select>
+                </div>
+                <div id="reprojection-status" class="reprojection-status">
+                    Select 3D reprojection mode to load the model.
                 </div>
             </div>
         </div>
-        <div class="viewer">
+
+        <div class="viewer" id="matching-viewer">
             <canvas id="match-canvas" style="position: absolute; top: 0; left: 0; z-index: 10; pointer-events: none;"></canvas>
             <div class="image-panel">
                 <canvas id="image1-canvas"></canvas>
@@ -60,8 +110,27 @@
                 <canvas id="image2-canvas"></canvas>
             </div>
         </div>
+
+        <div class="reprojection-viewer" id="reprojection-viewer" hidden>
+            <div id="reprojection-split" class="reprojection-split">
+                <img id="reprojection-cloud" alt="Geometrically projected 3D points">
+                <div id="reprojection-input-layer" class="reprojection-input-layer">
+                    <img id="reprojection-input" class="reprojection-input" alt="Input image">
+                </div>
+                <div id="reprojection-divider" class="reprojection-divider"></div>
+            </div>
+            <div id="reprojection-side" class="reprojection-side" hidden>
+                <div class="reprojection-pane">
+                    <img id="reprojection-cloud-side" alt="Geometrically projected 3D points">
+                </div>
+                <div class="reprojection-pane">
+                    <img id="reprojection-input-side" class="reprojection-input" alt="Input image">
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="/static/js/main.js"></script>
+    <script src="/static/js/reprojection.js"></script>
 </body>
 </html>

@@ -9,7 +9,12 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from colmap_service import ColmapService, DataSource
+from colmap_service import (
+    ColmapService,
+    DataSource,
+    InputSuperseded,
+    RenderSuperseded,
+)
 
 colmap_service: ColmapService
 
@@ -46,19 +51,24 @@ async def read_root(request: Request):
 
 @app.get("/serve_image/{image_path:path}")
 async def serve_image(image_path: str):
-    full_path = os.path.join(colmap_service.image_base_path, image_path)
-    real_path = os.path.realpath(full_path)
+    image_root = os.path.abspath(colmap_service.image_base_path)
+    full_path = os.path.abspath(os.path.join(image_root, image_path))
 
-    if not os.path.exists(real_path) or not os.path.isfile(real_path):
+    # Reject lexical traversal while allowing symlinks located inside the
+    # configured image tree to resolve to shared data elsewhere.
+    if os.path.commonpath([image_root, full_path]) != image_root:
+        raise HTTPException(status_code=400, detail="Image path escapes image root")
+
+    if not os.path.exists(full_path) or not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="Image not found")
 
     import mimetypes
 
-    media_type, _ = mimetypes.guess_type(real_path)
+    media_type, _ = mimetypes.guess_type(full_path)
     if media_type is None:
         media_type = "application/octet-stream"
 
-    with open(real_path, "rb") as f:
+    with open(full_path, "rb") as f:
         content = f.read()
 
     return Response(content=content, media_type=media_type)
@@ -68,6 +78,79 @@ async def serve_image(image_path: str):
 @app.get("/api/sources", response_model=List[str])
 async def get_sources():
     return colmap_service.get_available_sources()
+
+
+@app.get("/api/capabilities")
+async def get_capabilities():
+    available = colmap_service.has_reprojection_data()
+    if available:
+        colmap_service.start_reprojection_warmup()
+    return {
+        "reprojection": available,
+        "dataset_namespace": colmap_service.cache_namespace,
+    }
+
+
+@app.get("/api/reprojection/images", response_model=List[Dict[str, Any]])
+async def get_reprojection_images():
+    if not colmap_service.has_reprojection_data():
+        raise HTTPException(
+            status_code=409,
+            detail="3D reprojection requires a sparse model with registered images and points.",
+        )
+    return colmap_service.get_reprojection_images()
+
+
+@app.get("/api/reprojection/{image_id}/input")
+def get_reprojection_input(
+    image_id: int,
+    max_size: int = 1600,
+    stream: str = "default",
+):
+    try:
+        image = colmap_service.get_reprojection_input_image(
+            image_id, max_size, request_stream=stream
+        )
+    except InputSuperseded:
+        return Response(status_code=204)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Image not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=image,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.get("/api/reprojection/{image_id}/render")
+def get_reprojection_render(
+    image_id: int,
+    max_size: int = 1600,
+    color: str = "rgb",
+    radius: int = 1,
+    stream: str = "default",
+):
+    try:
+        png = colmap_service.get_reprojection_render_png(
+            image_id, max_size, color, radius, request_stream=stream
+        )
+    except RenderSuperseded:
+        # The browser has already moved to a newer camera. Returning no content
+        # avoids reporting a stale render as an application error.
+        return Response(status_code=204)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 @app.post("/api/set_source/{source_name}")
 async def set_source(source_name: str):
