@@ -44,6 +44,7 @@ class ColmapService:
     MAX_STREAM_GEOMETRIES = 8
     MAX_COLMAP_STREAM_SELECTIONS = 1024
     STREAM_IDLE_TIMEOUT_SECONDS = 10 * 60
+    MAX_REPROJECTION_SIZE = ReprojectionRenderer.MAX_PREVIEW_SIZE
 
     def __init__(
         self,
@@ -158,6 +159,9 @@ class ColmapService:
 
     def touch_geometry_stream(self, request_stream: str = "default"):
         self._geometry_store.touch(request_stream)
+
+    def supersede_reprojection_render(self, request_stream: str = "default"):
+        self._renderer.supersede(request_stream)
 
     def release_geometry_stream(self, request_stream: str = "default"):
         self._geometry_store.release(request_stream)

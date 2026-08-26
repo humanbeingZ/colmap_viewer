@@ -14,13 +14,16 @@ const reprojectionCloud = document.getElementById("reprojection-cloud");
 const reprojectionCloudSide = document.getElementById("reprojection-cloud-side");
 const reprojectionDivider = document.getElementById("reprojection-divider");
 const reprojectionLayout = document.getElementById("reprojection-layout");
+const reprojectionSplitAngle = document.getElementById("reprojection-split-angle");
 const reprojectionColor = document.getElementById("reprojection-color");
 const reprojectionPointSize = document.getElementById("reprojection-point-size");
 const reprojectionFlip = document.getElementById("reprojection-flip");
 const reprojectionResetView = document.getElementById("reprojection-reset-view");
+const reprojectionResetDivider = document.getElementById("reprojection-reset-divider");
 const reprojectionGeometryDrop = document.getElementById("reprojection-geometry-drop");
 const reprojectionGeometryFile = document.getElementById("reprojection-geometry-file");
 const reprojectionGeometryStatus = document.getElementById("reprojection-geometry-status");
+const reprojectionGeometrySummary = document.getElementById("reprojection-geometry-summary");
 const reprojectionUseColmap = document.getElementById("reprojection-use-colmap");
 
 const reprojectionStreamStorageKey = "colmap-viewer-reprojection-stream-v1";
@@ -57,7 +60,6 @@ let reprojectionUploadController = null;
 const reprojectionState = {
     images: [],
     datasetNamespace: "uninitialized",
-    geometryRevision: 0,
     geometryCacheToken: "colmap",
     geometryKind: "colmap",
     loaded: false,
@@ -65,15 +67,14 @@ const reprojectionState = {
     generation: 0,
     pointGeneration: 0,
     splitPercent: 50,
+    splitAngle: 0,
     viewScale: 1,
     viewTranslateX: 0,
     viewTranslateY: 0,
-    pointerMode: null,
-    pointerId: null,
-    pointerLastX: 0,
-    pointerLastY: 0,
     maxSize: 1600,
-    pointRenderTimer: null,
+    maxRenderSize: null,
+    navigationPointTimer: null,
+    pointSizeRenderTimer: null,
     prefetchInFlight: new Map(),
     navigationHoldKey: null,
     navigationHoldDelay: null,
@@ -81,7 +82,32 @@ const reprojectionState = {
     navigationRepeatDelay: 110,
     navigationPreview: false,
     navigationPreviewSize: 768,
+    currentInputUrl: null,
+    currentRenderUrl: null,
 };
+
+const reprojectionInteraction = new ReprojectionInteraction({
+    viewer: reprojectionViewer,
+    splitElement: reprojectionSplit,
+    inputLayer: reprojectionInputLayer,
+    divider: reprojectionDivider,
+    layoutControl: reprojectionLayout,
+    angleControl: reprojectionSplitAngle,
+    state: reprojectionState,
+    splitGeometry: ReprojectionSplitGeometry,
+    applyViewTransform: applyReprojectionViewTransform,
+});
+
+const reprojectionPointRequester = new ReprojectionPointRequester({
+    state: reprojectionState,
+    renderUrl: image => reprojectionUrls(image).render,
+    applySource: applyReprojectionRenderSource,
+    applyViewTransform: applyReprojectionViewTransform,
+    recoverGeometry: heartbeatReprojectionStream,
+    reportFailure: image => {
+        setReprojectionStatus(`Failed to render points for ${image.name}`, true);
+    },
+});
 
 document.body.dataset.viewerMode = "matches";
 
@@ -91,12 +117,13 @@ function setReprojectionStatus(message, isError = false) {
 }
 
 function applyGeometryStatus(geometry) {
-    reprojectionState.geometryRevision = geometry.revision;
     reprojectionState.geometryCacheToken = geometry.cache_token;
     reprojectionState.geometryKind = geometry.kind;
     const count = Number(geometry.point_count || 0).toLocaleString();
     reprojectionGeometryStatus.textContent =
         `${geometry.name} — ${geometry.kind}, ${count} rendered points`;
+    reprojectionGeometrySummary.textContent = geometry.name;
+    reprojectionGeometrySummary.title = geometry.name;
     reprojectionUseColmap.disabled = geometry.kind === "colmap";
 }
 
@@ -111,6 +138,7 @@ async function initializeReprojectionCapability() {
         }
         const capabilities = await response.json();
         reprojectionState.datasetNamespace = capabilities.dataset_namespace;
+        reprojectionState.maxRenderSize = capabilities.max_reprojection_size;
         applyGeometryStatus(capabilities.geometry);
         if (!capabilities.reprojection) {
             const option = viewerModeSelect.querySelector('option[value="reprojection"]');
@@ -125,7 +153,10 @@ async function initializeReprojectionCapability() {
 async function setViewerMode(mode) {
     const isReprojection = mode === "reprojection";
     if (isReprojection) {
-        await reprojectionIdentityReady;
+        await Promise.all([
+            reprojectionIdentityReady,
+            reprojectionCapabilityReady,
+        ]);
     }
     document.body.dataset.viewerMode = mode;
     matchingControls.hidden = isReprojection;
@@ -193,15 +224,18 @@ function previewSize(image) {
 }
 
 function fitReprojectionSplit() {
-    if (!reprojectionState.images.length || reprojectionViewer.hidden) {
+    if (!reprojectionState.images.length
+            || reprojectionViewer.hidden
+            || reprojectionLayout.value === "side") {
         return;
     }
     const image = reprojectionState.images[reprojectionState.currentIndex];
     const preview = previewSize(image);
     const bounds = reprojectionViewer.getBoundingClientRect();
     const scale = Math.min(bounds.width / preview.width, bounds.height / preview.height);
-    reprojectionSplit.style.width = `${preview.width * scale}px`;
-    reprojectionSplit.style.height = `${preview.height * scale}px`;
+    const width = preview.width * scale;
+    const height = preview.height * scale;
+    reprojectionInteraction.resize(width, height);
     applyReprojectionViewTransform();
 }
 
@@ -224,10 +258,47 @@ function setImageTransform(element, flipInput = false) {
 }
 
 function applyReprojectionViewTransform() {
-    setImageTransform(reprojectionCloud);
-    setImageTransform(reprojectionCloudSide);
-    setImageTransform(reprojectionInput, true);
-    setImageTransform(reprojectionInputSide, true);
+    if (reprojectionLayout.value === "side") {
+        setImageTransform(reprojectionCloudSide);
+        setImageTransform(reprojectionInputSide, true);
+    } else {
+        setImageTransform(reprojectionCloud);
+        setImageTransform(reprojectionInput, true);
+    }
+}
+
+function activeReprojectionInput() {
+    return reprojectionLayout.value === "side"
+        ? reprojectionInputSide
+        : reprojectionInput;
+}
+
+function applyReprojectionInputSource(url) {
+    reprojectionState.currentInputUrl = url;
+    const target = activeReprojectionInput();
+    if (target.getAttribute("src") !== url) {
+        target.src = url;
+        return true;
+    }
+    return false;
+}
+
+function applyReprojectionRenderSource(url) {
+    reprojectionState.currentRenderUrl = url;
+    const target = reprojectionLayout.value === "side"
+        ? reprojectionCloudSide
+        : reprojectionCloud;
+    target.src = url;
+    target.style.visibility = "visible";
+}
+
+function syncActiveReprojectionSources() {
+    if (reprojectionState.currentInputUrl) {
+        applyReprojectionInputSource(reprojectionState.currentInputUrl);
+    }
+    if (reprojectionState.currentRenderUrl) {
+        applyReprojectionRenderSource(reprojectionState.currentRenderUrl);
+    }
 }
 
 function reprojectionImageBounds(clientX) {
@@ -284,20 +355,34 @@ function resetReprojectionViewTransform() {
     applyReprojectionViewTransform();
 }
 
-function reprojectionUrls(image, radius) {
+function currentPreviewMaxSize() {
+    return reprojectionState.navigationPreview
+        ? Math.min(reprojectionState.maxSize, reprojectionState.navigationPreviewSize)
+        : reprojectionState.maxSize;
+}
+
+function pointRenderParameters() {
+    return ReprojectionPointSize.renderParameters({
+        pointSize: reprojectionPointSize.value,
+        baseMaxSize: currentPreviewMaxSize(),
+        navigationPreview: reprojectionState.navigationPreview,
+        maxRenderSize: reprojectionState.maxRenderSize,
+    });
+}
+
+function reprojectionUrls(image) {
     const base = `/api/reprojection/${image.id}`;
     const dataset = encodeURIComponent(reprojectionState.datasetNamespace);
     const stream = encodeURIComponent(reprojectionIdentity.id);
     const geometry = encodeURIComponent(reprojectionState.geometryCacheToken);
-    const maxSize = reprojectionState.navigationPreview
-        ? Math.min(reprojectionState.maxSize, reprojectionState.navigationPreviewSize)
-        : reprojectionState.maxSize;
+    const inputMaxSize = currentPreviewMaxSize();
+    const pointRender = pointRenderParameters();
     return {
-        input: `${base}/input?max_size=${maxSize}`
+        input: `${base}/input?max_size=${inputMaxSize}`
             + `&format=jpeg-v1&dataset=${dataset}&stream=${stream}`,
-        render: `${base}/render?max_size=${maxSize}`
+        render: `${base}/render?max_size=${pointRender.maxSize}`
             + `&color=${encodeURIComponent(reprojectionColor.value)}`
-            + `&radius=${radius}&dataset=${dataset}&stream=${stream}`
+            + `&radius=${pointRender.radius}&dataset=${dataset}&stream=${stream}`
             + `&geometry=${geometry}`,
     };
 }
@@ -434,10 +519,6 @@ function handleGeometryDrop(event) {
     }
 }
 
-function currentPointRadius() {
-    return Math.floor(normalizePointSize(reprojectionPointSize.value) / 2);
-}
-
 function prefetchUrl(url) {
     if (reprojectionState.prefetchInFlight.has(url)) {
         return reprojectionState.prefetchInFlight.get(url);
@@ -447,6 +528,33 @@ function prefetchUrl(url) {
         .finally(() => reprojectionState.prefetchInFlight.delete(url));
     reprojectionState.prefetchInFlight.set(url, pending);
     return pending;
+}
+
+let reprojectionRenderCancellation = null;
+
+function cancelReprojectionRender() {
+    if (reprojectionRenderCancellation) {
+        return reprojectionRenderCancellation;
+    }
+    const cancellation = (async () => {
+        await reprojectionIdentityReady;
+        try {
+            await fetch(
+                "/api/reprojection/cancel-render"
+                    + `?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
+                {method: "POST"}
+            );
+        } catch (_) {
+            // Navigation still works if cancellation races with server shutdown.
+        }
+    })();
+    reprojectionRenderCancellation = cancellation;
+    cancellation.finally(() => {
+        if (reprojectionRenderCancellation === cancellation) {
+            reprojectionRenderCancellation = null;
+        }
+    });
+    return cancellation;
 }
 
 function prefetchReprojectionNeighbors(generation) {
@@ -465,7 +573,7 @@ function prefetchReprojectionNeighbors(generation) {
         // Input decoding is safe to preload. Point renders are intentionally
         // never speculative: obsolete camera projections must not queue behind
         // the camera the user is currently requesting.
-        const urls = reprojectionUrls(reprojectionState.images[index], 0);
+        const urls = reprojectionUrls(reprojectionState.images[index]);
         prefetchUrl(urls.input);
     });
 }
@@ -480,77 +588,67 @@ function loadReprojectionFrame(index) {
     const image = reprojectionState.images[reprojectionState.currentIndex];
     reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
     const generation = ++reprojectionState.generation;
-    window.clearTimeout(reprojectionState.pointRenderTimer);
+    window.clearTimeout(reprojectionState.navigationPointTimer);
+    window.clearTimeout(reprojectionState.pointSizeRenderTimer);
+    reprojectionState.currentRenderUrl = null;
     reprojectionCloud.style.visibility = "hidden";
     reprojectionCloudSide.style.visibility = "hidden";
     setReprojectionStatus(
         `Loading image ${reprojectionState.currentIndex + 1} / ${reprojectionState.images.length}…`
     );
 
-    const urls = reprojectionUrls(image, currentPointRadius());
-    const inputLoader = new Image();
-    inputLoader.onload = () => {
+    const urls = reprojectionUrls(image);
+    const renderCancellation = cancelReprojectionRender();
+    const inputElement = activeReprojectionInput();
+    reprojectionInput.onload = null;
+    reprojectionInput.onerror = null;
+    reprojectionInputSide.onload = null;
+    reprojectionInputSide.onerror = null;
+    inputElement.onload = () => {
         if (generation !== reprojectionState.generation) {
             return;
         }
-        reprojectionInput.src = urls.input;
-        reprojectionInputSide.src = urls.input;
+        inputElement.onload = null;
+        inputElement.onerror = null;
         applyReprojectionViewTransform();
         setReprojectionStatus(
             `${reprojectionState.currentIndex + 1} / ${reprojectionState.images.length}: ${image.name}`
         );
         fitReprojectionSplit();
         // Geometry is deliberately delayed until image navigation settles.
-        reprojectionState.pointRenderTimer = window.setTimeout(
-            () => requestReprojectionPointLayer(generation), 180
-        );
+        reprojectionState.navigationPointTimer = window.setTimeout(async () => {
+            await renderCancellation;
+            requestReprojectionPointLayer(generation);
+        }, 180);
         window.setTimeout(() => prefetchReprojectionNeighbors(generation), 260);
     };
-    inputLoader.onerror = () => {
+    inputElement.onerror = () => {
         if (generation === reprojectionState.generation) {
             setReprojectionStatus(`Failed to load ${image.name}`, true);
         }
     };
-    inputLoader.src = urls.input;
-    fitReprojectionSplit();
+    // Reusing the visible element lets the browser replace an obsolete image
+    // request immediately instead of queueing detached preload/decode work.
+    const sourceChanged = applyReprojectionInputSource(urls.input);
+    if (!sourceChanged && inputElement.complete && inputElement.naturalWidth > 0) {
+        queueMicrotask(() => inputElement.onload?.());
+    }
 }
 
 function requestReprojectionPointLayer(generation = reprojectionState.generation) {
-    if (!reprojectionState.images.length) {
-        return;
-    }
-    const image = reprojectionState.images[reprojectionState.currentIndex];
-    const renderUrl = reprojectionUrls(image, currentPointRadius()).render;
-    const pointGeneration = ++reprojectionState.pointGeneration;
-    const pointLoader = new Image();
-    pointLoader.onload = () => {
-        if (generation !== reprojectionState.generation
-                || pointGeneration !== reprojectionState.pointGeneration) {
-            return;
-        }
-        reprojectionCloud.src = renderUrl;
-        reprojectionCloudSide.src = renderUrl;
-        reprojectionCloud.style.visibility = "visible";
-        reprojectionCloudSide.style.visibility = "visible";
-        applyReprojectionViewTransform();
-    };
-    pointLoader.onerror = async () => {
-        if (generation === reprojectionState.generation
-                && pointGeneration === reprojectionState.pointGeneration) {
-            const geometryChanged = await heartbeatReprojectionStream();
-            if (!geometryChanged
-                    && generation === reprojectionState.generation
-                    && pointGeneration === reprojectionState.pointGeneration) {
-                setReprojectionStatus(`Failed to render points for ${image.name}`, true);
-            }
-        }
-    };
-    pointLoader.src = renderUrl;
+    reprojectionPointRequester.request(generation);
 }
 
-function loadReprojectionPointLayer() {
-    window.clearTimeout(reprojectionState.pointRenderTimer);
-    requestReprojectionPointLayer();
+function loadReprojectionPointLayer(delay = 0) {
+    window.clearTimeout(reprojectionState.navigationPointTimer);
+    window.clearTimeout(reprojectionState.pointSizeRenderTimer);
+    if (delay > 0) {
+        reprojectionState.pointSizeRenderTimer = window.setTimeout(
+            requestReprojectionPointLayer, delay
+        );
+    } else {
+        requestReprojectionPointLayer();
+    }
 }
 
 function stepReprojection(direction) {
@@ -609,107 +707,23 @@ function startContinuousNavigation(key, direction) {
     }, 250);
 }
 
-function setReprojectionSplit(clientX) {
-    const bounds = reprojectionSplit.getBoundingClientRect();
-    const percent = 100 * (clientX - bounds.left) / bounds.width;
-    reprojectionState.splitPercent = Math.max(0, Math.min(100, percent));
-    reprojectionInputLayer.style.clipPath =
-        `inset(0 0 0 ${reprojectionState.splitPercent}%)`;
-    reprojectionDivider.style.left = `${reprojectionState.splitPercent}%`;
-}
-
-function pointerNearReprojectionDivider(clientX) {
-    if (reprojectionLayout.value === "side") {
-        return false;
-    }
-    const bounds = reprojectionSplit.getBoundingClientRect();
-    const dividerX = bounds.left
-        + bounds.width * reprojectionState.splitPercent / 100;
-    return Math.abs(clientX - dividerX) <= 7;
-}
-
-function updateReprojectionPointerCursor(clientX) {
-    if (reprojectionState.pointerMode === "split") {
-        reprojectionViewer.style.cursor = "ew-resize";
-    } else if (reprojectionState.pointerMode === "pan") {
-        reprojectionViewer.style.cursor = "grabbing";
-    } else {
-        reprojectionViewer.style.cursor = pointerNearReprojectionDivider(clientX)
-            ? "ew-resize"
-            : "grab";
-    }
-}
-
-function startReprojectionPointerDrag(event) {
-    if (event.button !== 0) {
-        return;
-    }
-    event.preventDefault();
-    reprojectionState.pointerMode = pointerNearReprojectionDivider(event.clientX)
-        ? "split"
-        : "pan";
-    reprojectionState.pointerId = event.pointerId;
-    reprojectionState.pointerLastX = event.clientX;
-    reprojectionState.pointerLastY = event.clientY;
-    reprojectionViewer.setPointerCapture(event.pointerId);
-    if (reprojectionState.pointerMode === "split") {
-        setReprojectionSplit(event.clientX);
-    }
-    updateReprojectionPointerCursor(event.clientX);
-}
-
-function moveReprojectionPointerDrag(event) {
-    if (reprojectionState.pointerId !== event.pointerId) {
-        updateReprojectionPointerCursor(event.clientX);
-        return;
-    }
-    event.preventDefault();
-    if (reprojectionState.pointerMode === "split") {
-        setReprojectionSplit(event.clientX);
-    } else if (reprojectionState.pointerMode === "pan") {
-        reprojectionState.viewTranslateX += event.clientX
-            - reprojectionState.pointerLastX;
-        reprojectionState.viewTranslateY += event.clientY
-            - reprojectionState.pointerLastY;
-        applyReprojectionViewTransform();
-    }
-    reprojectionState.pointerLastX = event.clientX;
-    reprojectionState.pointerLastY = event.clientY;
-}
-
-function stopReprojectionPointerDrag(event) {
-    if (reprojectionState.pointerId !== event.pointerId) {
-        return;
-    }
-    if (reprojectionViewer.hasPointerCapture(event.pointerId)) {
-        reprojectionViewer.releasePointerCapture(event.pointerId);
-    }
-    reprojectionState.pointerMode = null;
-    reprojectionState.pointerId = null;
-    updateReprojectionPointerCursor(event.clientX);
-}
-
 function applyReprojectionFlip() {
     applyReprojectionViewTransform();
 }
 
-function normalizePointSize(value) {
-    let size = Math.round(Number(value));
-    if (!Number.isFinite(size)) {
-        size = 3;
-    }
-    size = Math.max(1, Math.min(15, size));
-    // Odd diameters keep the rendered point centered on its projected pixel.
-    if (size % 2 === 0) {
-        size += size === 15 ? -1 : 1;
-    }
-    return size;
+function setReprojectionPointSize(value) {
+    const size = ReprojectionPointSize.normalize(value);
+    reprojectionPointSize.value = size;
+    // Normal sizes reuse cached projection/splat data and should respond on
+    // every wheel step. Only fractional sizes require a cold supersampled
+    // render, so coalesce that short three-step range.
+    loadReprojectionPointLayer(size < 1 ? 60 : 0);
 }
 
-function setReprojectionPointSize(value) {
-    const size = normalizePointSize(value);
-    reprojectionPointSize.value = size;
-    loadReprojectionPointLayer();
+function stepReprojectionPointSize(direction) {
+    setReprojectionPointSize(
+        ReprojectionPointSize.step(reprojectionPointSize.value, direction)
+    );
 }
 
 viewerModeSelect.addEventListener("change", () => setViewerMode(viewerModeSelect.value));
@@ -723,7 +737,15 @@ reprojectionPointSize.addEventListener("change", () => {
     setReprojectionPointSize(reprojectionPointSize.value);
 });
 reprojectionFlip.addEventListener("change", applyReprojectionFlip);
+reprojectionSplitAngle.addEventListener("change", () => {
+    reprojectionInteraction.setAngle(
+        ReprojectionSplitGeometry.normalizedAngle(reprojectionSplitAngle.value)
+    );
+});
 reprojectionResetView.addEventListener("click", resetReprojectionViewTransform);
+reprojectionResetDivider.addEventListener("click", () => {
+    reprojectionInteraction.resetDivider();
+});
 reprojectionGeometryDrop.addEventListener("click", () => reprojectionGeometryFile.click());
 reprojectionGeometryDrop.addEventListener("keydown", event => {
     if (event.key === "Enter" || event.key === " ") {
@@ -743,27 +765,21 @@ reprojectionUseColmap.addEventListener("click", resetReprojectionGeometry);
 });
 reprojectionLayout.addEventListener("change", () => {
     const sideBySide = reprojectionLayout.value === "side";
+    reprojectionSplitAngle.disabled = sideBySide;
     reprojectionSplit.hidden = sideBySide;
     reprojectionSide.hidden = !sideBySide;
     if (!sideBySide) {
         fitReprojectionSplit();
     }
+    syncActiveReprojectionSources();
     resetReprojectionViewTransform();
 });
-reprojectionViewer.addEventListener("pointerdown", startReprojectionPointerDrag);
-reprojectionViewer.addEventListener("pointermove", moveReprojectionPointerDrag);
-reprojectionViewer.addEventListener("pointerup", stopReprojectionPointerDrag);
-reprojectionViewer.addEventListener("pointercancel", stopReprojectionPointerDrag);
-reprojectionViewer.addEventListener("pointerleave", event => {
-    if (reprojectionState.pointerMode === null) {
-        reprojectionViewer.style.cursor = "grab";
-    }
-});
+reprojectionInteraction.attach();
 reprojectionViewer.addEventListener("wheel", event => {
     if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
-        const direction = event.deltaY < 0 ? 2 : -2;
-        setReprojectionPointSize(Number(reprojectionPointSize.value) + direction);
+        const direction = event.deltaY < 0 ? 1 : -1;
+        stepReprojectionPointSize(direction);
     } else {
         event.preventDefault();
         zoomReprojectionView(event);
@@ -805,4 +821,4 @@ document.addEventListener("visibilitychange", () => {
 setInterval(heartbeatReprojectionStream, 30_000);
 heartbeatReprojectionStream();
 
-initializeReprojectionCapability();
+const reprojectionCapabilityReady = initializeReprojectionCapability();

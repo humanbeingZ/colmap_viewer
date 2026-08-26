@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from reprojection_core import GeometryData
+from reprojection_core import GeometryData, RenderSuperseded
 from reprojection_renderer import ReprojectionRenderer
 
 
@@ -66,6 +66,18 @@ class ReprojectionRendererTest(unittest.TestCase):
             [[255, 0, 0], [0, 255, 0]],
         ))
         np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
+
+    def test_one_pixel_render_skips_large_splat_buffers(self):
+        self.render([[0, 0, 1]], [[12, 34, 56]], radius=0)
+        self.assertIsNone(self.renderer._splat_cache.get(("test", 1, 320, "rgb")))
+
+    def test_supersede_cancels_only_the_current_viewer_request(self):
+        request_id = self.renderer._new_render_request("viewer")
+        other_request_id = self.renderer._new_render_request("other")
+        self.renderer.supersede("viewer")
+        with self.assertRaises(RenderSuperseded):
+            self.renderer._check_render_request("viewer", request_id)
+        self.renderer._check_render_request("other", other_request_id)
 
     def test_enlarged_splats_remain_depth_aware(self):
         pixels = decode(self.render(

@@ -68,12 +68,15 @@ Then, open your web browser and navigate to `http://localhost:8000`.
 
 ## Tests
 
-Run the backend regression suite and the dependency-free browser identity test:
+Run the backend and dependency-free browser regression suites:
 
 ```bash
 python -m unittest discover -s tests
 node tests/viewer_stream_test.js
 node tests/reprojection_request_test.js
+node tests/reprojection_split_test.js
+node tests/reprojection_point_size_test.js
+node tests/reprojection_interaction_test.js
 ```
 
 ## UI Overview

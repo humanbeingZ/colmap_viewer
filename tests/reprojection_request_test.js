@@ -1,11 +1,7 @@
 const assert = require("assert");
-const fs = require("fs");
-const vm = require("vm");
-
-const source = fs.readFileSync("static/js/reprojection.js", "utf8");
-const start = source.indexOf("function requestReprojectionPointLayer");
-const end = source.indexOf("function loadReprojectionPointLayer", start);
-const requestFunction = source.slice(start, end);
+const ReprojectionPointRequester = require(
+    "../static/js/reprojection_point_request.js"
+);
 const loaders = [];
 
 class TestImage {
@@ -28,39 +24,44 @@ const state = {
     generation: 4,
     pointGeneration: 0,
 };
-const cloud = {src: null, style: {visibility: "hidden"}};
-const cloudSide = {src: null, style: {visibility: "hidden"}};
+let source = null;
+let transforms = 0;
 let failures = 0;
-const context = {
-    reprojectionState: state,
-    reprojectionUrls: () => ({render: `render-${state.pointGeneration + 1}`}),
-    currentPointRadius: () => 1,
-    Image: TestImage,
-    reprojectionCloud: cloud,
-    reprojectionCloudSide: cloudSide,
-    applyReprojectionViewTransform: () => {},
-    heartbeatReprojectionStream: async () => false,
-    setReprojectionStatus: () => {
+let renderCount = 0;
+const requester = new ReprojectionPointRequester({
+    state,
+    renderUrl: () => `render-${++renderCount}`,
+    createImage: () => new TestImage(),
+    applySource: url => {
+        source = url;
+    },
+    applyViewTransform: () => {
+        transforms += 1;
+    },
+    recoverGeometry: async () => false,
+    reportFailure: () => {
         failures += 1;
     },
-};
-
-vm.runInNewContext(
-    `${requestFunction}; globalThis.requestLayer = requestReprojectionPointLayer;`,
-    context
-);
+});
 
 (async () => {
-    context.requestLayer();
-    context.requestLayer();
+    requester.request();
+    requester.request();
     await loaders[0].onerror();
     loaders[0].onload();
     assert.strictEqual(failures, 0);
-    assert.strictEqual(cloud.src, null);
+    assert.strictEqual(source, null);
 
     loaders[1].onload();
-    assert.strictEqual(cloud.src, "render-2");
-    assert.strictEqual(cloud.style.visibility, "visible");
+    assert.strictEqual(source, "render-2");
+    assert.strictEqual(transforms, 1);
+
+    requester.request();
+    await loaders[2].onerror();
+    assert.strictEqual(failures, 1);
+
+    assert.strictEqual(requester.request(state.generation - 1), null);
+    assert.strictEqual(loaders.length, 3);
     console.log("reprojection point request tests passed");
 })().catch(error => {
     console.error(error);

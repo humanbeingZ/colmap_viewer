@@ -20,6 +20,9 @@ from reprojection_core import (
 class ReprojectionRenderer:
     """Project XYZ/RGB geometry into COLMAP cameras with a depth buffer."""
 
+    MIN_PREVIEW_SIZE = 320
+    MAX_PREVIEW_SIZE = 4096
+
     def __init__(
         self,
         normalize_stream: Callable[[str], str],
@@ -34,8 +37,16 @@ class ReprojectionRenderer:
 
     @staticmethod
     def preview_geometry(camera, max_size: int):
-        if not 320 <= max_size <= 4096:
-            raise ValueError("max_size must be between 320 and 4096")
+        if not (
+            ReprojectionRenderer.MIN_PREVIEW_SIZE
+            <= max_size
+            <= ReprojectionRenderer.MAX_PREVIEW_SIZE
+        ):
+            raise ValueError(
+                "max_size must be between "
+                f"{ReprojectionRenderer.MIN_PREVIEW_SIZE} and "
+                f"{ReprojectionRenderer.MAX_PREVIEW_SIZE}"
+            )
         scale = min(1.0, max_size / max(camera.width, camera.height))
         width = max(1, round(camera.width * scale))
         height = max(1, round(camera.height * scale))
@@ -66,6 +77,10 @@ class ReprojectionRenderer:
 
     def _check_render_request(self, request_stream: str, request_id: int):
         self._render_requests.check(request_stream, request_id)
+
+    def supersede(self, request_stream: str):
+        """Cancel any cold projection currently running for one viewer."""
+        self._render_requests.begin(request_stream)
 
     @staticmethod
     def _depth_colors(depth: np.ndarray) -> np.ndarray:
@@ -228,6 +243,9 @@ class ReprojectionRenderer:
                     canvas.reshape(-1, 3)[pixel] = colors
 
             self._check_render_request(request_stream, request_id)
+            if not need_splat_data:
+                return self._cache_put(cache_key, self._encode_png(canvas))
+
             # Positive IEEE-754 float bits preserve depth ordering. Packing the
             # depth bits with the source pixel index lets OpenCV morphology
             # return both the nearest depth and the exact winning color source.

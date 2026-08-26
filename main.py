@@ -91,6 +91,7 @@ async def get_capabilities(stream: str = "default"):
     return {
         "reprojection": available,
         "dataset_namespace": colmap_service.cache_namespace,
+        "max_reprojection_size": colmap_service.MAX_REPROJECTION_SIZE,
         "geometry": colmap_service.get_geometry_status(stream),
     }
 
@@ -172,6 +173,12 @@ async def reset_reprojection_geometry(stream: str = "default"):
 @app.post("/api/reprojection/stream/heartbeat")
 async def heartbeat_reprojection_stream(stream: str = "default"):
     return colmap_service.get_geometry_status(stream)
+
+
+@app.post("/api/reprojection/cancel-render", status_code=204)
+async def cancel_reprojection_render(stream: str = "default"):
+    colmap_service.supersede_reprojection_render(stream)
+    return Response(status_code=204)
 
 
 @app.delete("/api/reprojection/stream", status_code=204)

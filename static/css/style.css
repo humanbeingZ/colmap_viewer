@@ -33,9 +33,7 @@ body {
 }
 
 .viewer-mode-selection {
-    margin-bottom: 20px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid #ddd;
+    margin-bottom: 16px;
 }
 
 .viewer-mode-selection label,
@@ -192,7 +190,7 @@ canvas {
 }
 
 .reprojection-status {
-    margin-top: 15px;
+    margin-top: 10px;
     padding: 10px;
     border-radius: 4px;
     background: #eee;
@@ -201,38 +199,125 @@ canvas {
     overflow-wrap: anywhere;
 }
 
-.reprojection-point-size-control {
+.reprojection-option-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 9px 10px;
+}
+
+.reprojection-options {
+    margin-bottom: 9px;
+}
+
+.reprojection-field label {
+    display: block;
+    margin-bottom: 4px;
+    color: #555;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.reprojection-field select,
+.reprojection-disclosure-content select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 6px;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    background: white;
+}
+
+.reprojection-point-size-control,
+.reprojection-angle-control {
     display: flex;
     align-items: center;
     gap: 7px;
-    margin-bottom: 10px;
+    margin-bottom: 0;
 }
 
-.reprojection-point-size-control input {
+.reprojection-point-size-control input,
+.reprojection-angle-control input {
+    box-sizing: border-box;
+    min-width: 0;
     width: 72px;
-    padding: 8px;
+    padding: 7px 6px;
     border: 1px solid #ddd;
     border-radius: 4px;
 }
 
 .reprojection-reset-view {
     width: 100%;
-    padding: 8px;
-    margin-bottom: 10px;
+    padding: 7px;
+    margin: 0;
+}
+
+.reprojection-reset-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
 }
 
 .reprojection-geometry {
-    margin-bottom: 16px;
+    margin-bottom: 0;
 }
 
-.reprojection-geometry > label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: bold;
+.reprojection-disclosure {
+    margin: 0 0 9px;
+    border: 1px solid #dedede;
+    border-radius: 5px;
+    background: #fafafa;
+}
+
+.reprojection-disclosure summary {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 9px;
+    cursor: pointer;
+    color: #444;
+    font-size: 0.85rem;
+    font-weight: 600;
+    list-style: none;
+}
+
+.reprojection-disclosure summary::before {
+    content: "▸";
+    color: #777;
+}
+
+.reprojection-disclosure[open] summary::before {
+    content: "▾";
+}
+
+.reprojection-disclosure summary::-webkit-details-marker {
+    display: none;
+}
+
+.reprojection-summary-value {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: #777;
+    font-size: 0.75rem;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reprojection-disclosure-content {
+    padding: 1px 9px 9px;
+}
+
+.reprojection-hint {
+    margin-top: 4px;
+    color: #777;
+    font-size: 0.72rem;
 }
 
 .geometry-drop-zone {
-    padding: 12px 8px;
+    padding: 9px 7px;
     border: 1px dashed #999;
     border-radius: 4px;
     background: #fafafa;
@@ -323,16 +408,20 @@ canvas {
 
 .reprojection-input-layer {
     clip-path: inset(0 0 0 50%);
+    contain: paint;
+    will-change: clip-path;
 }
 
 .reprojection-divider {
     position: absolute;
     z-index: 3;
-    top: 0;
-    bottom: 0;
+    top: 50%;
     left: 50%;
-    width: 1px;
+    width: 200%;
+    height: 1px;
     background: rgba(255, 255, 255, 0.8);
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center;
     pointer-events: none;
 }
 
