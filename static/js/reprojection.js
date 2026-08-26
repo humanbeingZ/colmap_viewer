@@ -26,64 +26,8 @@ const reprojectionUseColmap = document.getElementById("reprojection-use-colmap")
 const reprojectionStreamStorageKey = "colmap-viewer-reprojection-stream-v1";
 const reprojectionUploadGenerationKey = "colmap-viewer-upload-generation-v1";
 
-function sessionValue(key) {
-    try {
-        return globalThis.sessionStorage?.getItem(key);
-    } catch (_) {
-        return null;
-    }
-}
-
-function storeSessionValue(key, value) {
-    try {
-        globalThis.sessionStorage?.setItem(key, value);
-    } catch (_) {
-        // Privacy settings may disable storage; the in-memory value still works.
-    }
-}
-
-function newReprojectionIdentity() {
-    return globalThis.crypto?.randomUUID?.()
-        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-let reprojectionStreamId = null;
-let reprojectionIdentityChannel = null;
-let reprojectionIdentityLockRequest = null;
-let reprojectionIdentityLockRelease = null;
-
-async function tryLockReprojectionIdentity(candidate) {
-    const locks = globalThis.navigator?.locks;
-    if (!locks?.request) {
-        return null;
-    }
-    let resolveAcquired;
-    const acquired = new Promise(resolve => {
-        resolveAcquired = resolve;
-    });
-    try {
-        reprojectionIdentityLockRequest = locks.request(
-            `colmap-viewer-stream:${candidate}`,
-            {mode: "exclusive", ifAvailable: true},
-            lock => {
-                if (!lock) {
-                    resolveAcquired(false);
-                    return undefined;
-                }
-                resolveAcquired(true);
-                return new Promise(resolve => {
-                    reprojectionIdentityLockRelease = resolve;
-                });
-            }
-        ).catch(() => resolveAcquired(null));
-    } catch (_) {
-        return null;
-    }
-    return acquired;
-}
-
 async function recoverFromLateIdentityCollision(replacementStream) {
-    if (reprojectionStreamId !== replacementStream) {
+    if (reprojectionIdentity.id !== replacementStream) {
         return;
     }
     reprojectionUploadController?.abort();
@@ -96,88 +40,13 @@ async function recoverFromLateIdentityCollision(replacementStream) {
     }
 }
 
-async function claimReprojectionStreamIdentity() {
-    let candidate = sessionValue(reprojectionStreamStorageKey)
-        || newReprojectionIdentity();
-    const pageInstance = newReprojectionIdentity();
-
-    // Web Locks are managed by the browser rather than a tab's event loop, so
-    // a suspended original tab still prevents a duplicate from claiming its ID.
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-        const acquired = await tryLockReprojectionIdentity(candidate);
-        if (acquired === true) {
-            storeSessionValue(reprojectionStreamStorageKey, candidate);
-            reprojectionStreamId = candidate;
-            return;
-        }
-        if (acquired === null) {
-            break;
-        }
-        candidate = newReprojectionIdentity();
-    }
-
-    if (typeof globalThis.BroadcastChannel !== "function") {
-        storeSessionValue(reprojectionStreamStorageKey, candidate);
-        reprojectionStreamId = candidate;
-        return;
-    }
-
-    try {
-        const channel = new BroadcastChannel("colmap-viewer-stream-claims-v1");
-        reprojectionIdentityChannel = channel;
-        let probing = true;
-        let occupied = false;
-        channel.onmessage = event => {
-            const message = event.data || {};
-            if (message.type === "probe"
-                    && message.stream === candidate
-                    && message.instance !== pageInstance) {
-                channel.postMessage({
-                    type: "occupied",
-                    stream: candidate,
-                    target: message.instance,
-                });
-            } else if (probing
-                    && message.type === "occupied"
-                    && message.stream === candidate
-                    && message.target === pageInstance) {
-                occupied = true;
-            } else if (!probing
-                    && message.type === "occupied"
-                    && message.stream === candidate
-                    && message.target === pageInstance) {
-                candidate = newReprojectionIdentity();
-                storeSessionValue(reprojectionStreamStorageKey, candidate);
-                reprojectionStreamId = candidate;
-                channel.postMessage({
-                    type: "probe",
-                    stream: candidate,
-                    instance: pageInstance,
-                });
-                void recoverFromLateIdentityCollision(candidate);
-            }
-        };
-        channel.postMessage({
-            type: "probe",
-            stream: candidate,
-            instance: pageInstance,
-        });
-        await new Promise(resolve => window.setTimeout(resolve, 100));
-        probing = false;
-        if (occupied) {
-            candidate = newReprojectionIdentity();
-        }
-    } catch (_) {
-        reprojectionIdentityChannel?.close();
-        reprojectionIdentityChannel = null;
-    }
-    storeSessionValue(reprojectionStreamStorageKey, candidate);
-    reprojectionStreamId = candidate;
-}
-
-const reprojectionIdentityReady = claimReprojectionStreamIdentity();
+const reprojectionIdentity = new ViewerStreamIdentity({
+    storageKey: reprojectionStreamStorageKey,
+    onLateCollision: recoverFromLateIdentityCollision,
+});
+const reprojectionIdentityReady = reprojectionIdentity.ready;
 let reprojectionUploadGeneration = Number(
-    sessionValue(reprojectionUploadGenerationKey) || 0
+    ViewerStreamIdentity.readSession(reprojectionUploadGenerationKey) || 0
 );
 if (!Number.isSafeInteger(reprojectionUploadGeneration)
         || reprojectionUploadGeneration < 0) {
@@ -235,7 +104,7 @@ async function initializeReprojectionCapability() {
     await reprojectionIdentityReady;
     try {
         const response = await fetch(
-            `/api/capabilities?stream=${encodeURIComponent(reprojectionStreamId)}`
+            `/api/capabilities?stream=${encodeURIComponent(reprojectionIdentity.id)}`
         );
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
@@ -418,7 +287,7 @@ function resetReprojectionViewTransform() {
 function reprojectionUrls(image, radius) {
     const base = `/api/reprojection/${image.id}`;
     const dataset = encodeURIComponent(reprojectionState.datasetNamespace);
-    const stream = encodeURIComponent(reprojectionStreamId);
+    const stream = encodeURIComponent(reprojectionIdentity.id);
     const geometry = encodeURIComponent(reprojectionState.geometryCacheToken);
     const maxSize = reprojectionState.navigationPreview
         ? Math.min(reprojectionState.maxSize, reprojectionState.navigationPreviewSize)
@@ -440,7 +309,7 @@ async function uploadReprojectionGeometry(file) {
     }
     await reprojectionIdentityReady;
     reprojectionUploadGeneration += 1;
-    storeSessionValue(
+    ViewerStreamIdentity.writeSession(
         reprojectionUploadGenerationKey,
         String(reprojectionUploadGeneration)
     );
@@ -454,7 +323,7 @@ async function uploadReprojectionGeometry(file) {
     try {
         const response = await fetch(
             `/api/reprojection/geometry?filename=${encodeURIComponent(file.name)}`
-                + `&stream=${encodeURIComponent(reprojectionStreamId)}`
+                + `&stream=${encodeURIComponent(reprojectionIdentity.id)}`
                 + `&generation=${reprojectionUploadGeneration}`,
             {
                 method: "POST",
@@ -501,7 +370,7 @@ async function resetReprojectionGeometry() {
     setReprojectionStatus("Restoring COLMAP points3D…");
     try {
         const response = await fetch(
-            `/api/reprojection/geometry?stream=${encodeURIComponent(reprojectionStreamId)}`,
+            `/api/reprojection/geometry?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
             {method: "DELETE"}
         );
         if (!response.ok) {
@@ -523,7 +392,7 @@ async function heartbeatReprojectionStream() {
     try {
         const response = await fetch(
             "/api/reprojection/stream/heartbeat"
-                + `?stream=${encodeURIComponent(reprojectionStreamId)}`,
+                + `?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
             {method: "POST"}
         );
         if (!response.ok) {

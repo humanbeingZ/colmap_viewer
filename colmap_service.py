@@ -3,43 +3,20 @@ import os
 import io
 import hashlib
 import threading
-import time
-from collections import OrderedDict
-from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from enum import Enum
 
 import numpy as np
-import cv2
-import numexpr as ne
 from PIL import Image
-from plyfile import PlyData
-
-
-class RenderSuperseded(RuntimeError):
-    """Raised when a newer cold projection request replaces this one."""
-
-
-class InputSuperseded(RuntimeError):
-    """Raised when a newer source-image request replaces this one."""
-
-
-class GeometryCapacityError(RuntimeError):
-    """Raised instead of silently replacing another viewer's geometry."""
-
-
-class GeometryUploadSuperseded(RuntimeError):
-    """Raised when a newer upload has replaced this upload request."""
-
-
-@dataclass(frozen=True)
-class GeometryData:
-    xyz: np.ndarray
-    rgb: np.ndarray
-    name: str
-    kind: str
-    revision: int
-    cache_token: str
+from ply_geometry import PlyGeometryLoader
+from reprojection_core import (
+    BoundedLRUCache,
+    GeometryData,
+    InputSuperseded,
+    SupersessionTracker,
+    ViewerGeometryStore,
+)
+from reprojection_renderer import ReprojectionRenderer
 
 
 class DataSource(Enum):
@@ -95,32 +72,28 @@ class ColmapService:
 
         # Geometry arrays are intentionally initialized only when reprojection
         # mode is first used. Match-only sessions do not pay the memory cost.
-        self._geometry_lock = threading.Lock()
+        self._geometry_build_lock = threading.Lock()
         self._colmap_geometry: Optional[GeometryData] = None
-        self._default_geometry: Optional[GeometryData] = None
-        # Uploaded arrays and lightweight explicit COLMAP selections are kept
-        # separately. Active uploaded arrays are never silently evicted.
-        self._stream_geometries = OrderedDict()
-        self._colmap_streams = set()
-        self._pending_geometry_streams = {}
-        self._stream_last_seen = {}
-        self._latest_client_upload_generations = {}
-        self._geometry_upload_sequence = 0
-        self._geometry_revision_sequence = 0
-        self._render_lock = threading.Lock()
-        self._render_request_lock = threading.Lock()
-        self._render_request_sequence = 0
-        self._latest_render_requests = OrderedDict()
+        self._geometry_store = ViewerGeometryStore(
+            max_uploaded_geometries=self.MAX_STREAM_GEOMETRIES,
+            max_colmap_selections=self.MAX_COLMAP_STREAM_SELECTIONS,
+            idle_timeout_seconds=self.STREAM_IDLE_TIMEOUT_SECONDS,
+            normalize_stream=self._request_stream,
+        )
         self._input_lock = threading.Lock()
-        self._input_request_lock = threading.Lock()
-        self._input_request_sequence = 0
-        self._latest_input_requests = OrderedDict()
-        self._cache_lock = threading.Lock()
+        self._input_requests = SupersessionTracker(
+            InputSuperseded, self._request_stream
+        )
         self._warmup_started = False
-        self._png_cache: Dict[tuple, bytes] = {}
-        self._png_cache_order: List[tuple] = []
-        self._splat_cache: Dict[tuple, tuple] = {}
-        self._splat_cache_order: List[tuple] = []
+        self._png_cache = BoundedLRUCache(20)
+        self._ply_loader = PlyGeometryLoader(
+            max_points=self.MAX_EXTERNAL_POINTS,
+            max_triangles=self.MAX_MESH_TRIANGLES,
+        )
+        self._renderer = ReprojectionRenderer(
+            normalize_stream=self._request_stream,
+            png_cache=self._png_cache,
+        )
 
     def load(self):
         """Loads the available COLMAP data sources."""
@@ -183,477 +156,31 @@ class ColmapService:
             and self.reconstruction.images
         )
 
-    @staticmethod
-    def _geometry_status(geometry: Optional[GeometryData], colmap_count: int):
-        if geometry is None:
-            return {
-                "name": "COLMAP points3D",
-                "kind": "colmap",
-                "point_count": int(colmap_count),
-                "revision": 0,
-                "cache_token": "colmap",
-            }
-        return {
-            "name": geometry.name,
-            "kind": geometry.kind,
-            "point_count": int(len(geometry.xyz)),
-            "revision": geometry.revision,
-            "cache_token": geometry.cache_token,
-        }
-
-    def _selected_geometry_locked(self, request_stream: str):
-        stream = self._request_stream(request_stream)
-        if stream in self._colmap_streams:
-            return None
-        if stream in self._stream_geometries:
-            geometry = self._stream_geometries[stream]
-            self._stream_geometries.move_to_end(stream)
-            return geometry
-        return self._default_geometry
-
-    def _expire_idle_geometry_streams_locked(self, now: Optional[float] = None):
-        now = time.monotonic() if now is None else now
-        expired = [
-            stream
-            for stream, last_seen in self._stream_last_seen.items()
-            if (
-                now - last_seen > self.STREAM_IDLE_TIMEOUT_SECONDS
-                and stream not in self._pending_geometry_streams
-            )
-        ]
-        for stream in expired:
-            self._stream_geometries.pop(stream, None)
-            self._colmap_streams.discard(stream)
-            self._stream_last_seen.pop(stream, None)
-            self._latest_client_upload_generations.pop(stream, None)
-
-    def _touch_geometry_stream_locked(self, request_stream: str) -> str:
-        stream = self._request_stream(request_stream)
-        self._expire_idle_geometry_streams_locked()
-        self._stream_last_seen[stream] = time.monotonic()
-        return stream
-
     def touch_geometry_stream(self, request_stream: str = "default"):
-        with self._geometry_lock:
-            self._touch_geometry_stream_locked(request_stream)
+        self._geometry_store.touch(request_stream)
 
     def release_geometry_stream(self, request_stream: str = "default"):
-        stream = self._request_stream(request_stream)
-        with self._geometry_lock:
-            self._stream_geometries.pop(stream, None)
-            self._colmap_streams.discard(stream)
-            self._pending_geometry_streams.pop(stream, None)
-            self._stream_last_seen.pop(stream, None)
-            self._latest_client_upload_generations.pop(stream, None)
+        self._geometry_store.release(request_stream)
 
     def begin_external_geometry_upload(
         self,
         request_stream: str = "default",
         client_generation: Optional[int] = None,
     ) -> int:
-        stream = self._request_stream(request_stream)
-        with self._geometry_lock:
-            self._expire_idle_geometry_streams_locked()
-            if client_generation is not None:
-                latest = self._latest_client_upload_generations.get(stream, -1)
-                if client_generation <= latest:
-                    raise GeometryUploadSuperseded(
-                        "A newer geometry upload already exists for this viewer"
-                    )
-
-            is_new = (
-                stream not in self._stream_geometries
-                and stream not in self._pending_geometry_streams
-            )
-            reserved_new = sum(
-                pending_stream not in self._stream_geometries
-                for pending_stream in self._pending_geometry_streams
-            )
-            if is_new and (
-                len(self._stream_geometries) + reserved_new
-                >= self.MAX_STREAM_GEOMETRIES
-            ):
-                raise GeometryCapacityError(
-                    "The server already has the maximum of "
-                    f"{self.MAX_STREAM_GEOMETRIES} active uploaded geometries; "
-                    "reset one viewer to COLMAP points3D or wait for an idle "
-                    "viewer to expire before uploading another"
-                )
-
-            if client_generation is not None:
-                self._latest_client_upload_generations[stream] = client_generation
-            self._geometry_upload_sequence += 1
-            upload_token = self._geometry_upload_sequence
-            self._pending_geometry_streams[stream] = upload_token
-            self._stream_last_seen[stream] = time.monotonic()
-            return upload_token
+        return self._geometry_store.begin_upload(
+            request_stream, client_generation
+        )
 
     def cancel_external_geometry_upload(
         self, request_stream: str, upload_token: int
     ):
-        stream = self._request_stream(request_stream)
-        with self._geometry_lock:
-            if self._pending_geometry_streams.get(stream) == upload_token:
-                self._pending_geometry_streams.pop(stream, None)
+        self._geometry_store.cancel_upload(request_stream, upload_token)
 
     def get_geometry_status(
         self, request_stream: str = "default"
     ) -> Dict[str, Any]:
-        with self._geometry_lock:
-            stream = self._touch_geometry_stream_locked(request_stream)
-            geometry = self._selected_geometry_locked(stream)
-            colmap_count = (
-                len(self.reconstruction.points3D) if self.reconstruction else 0
-            )
-            return self._geometry_status(geometry, colmap_count)
-
-    @staticmethod
-    def _ply_vertex_colors(vertex, selection) -> np.ndarray:
-        names = set(vertex.data.dtype.names or ())
-        if {"red", "green", "blue"}.issubset(names):
-            colors = np.column_stack([
-                vertex["red"][selection],
-                vertex["green"][selection],
-                vertex["blue"][selection],
-            ])
-            if np.issubdtype(colors.dtype, np.floating):
-                finite_max = np.nanmax(colors) if colors.size else 0
-                if finite_max <= 1.0:
-                    colors = colors * 255.0
-            return np.clip(colors, 0, 255).astype(np.uint8)
-        if {"f_dc_0", "f_dc_1", "f_dc_2"}.issubset(names):
-            # Standard degree-zero spherical-harmonic conversion used by
-            # 3D Gaussian Splatting. Higher-order SH, opacity, scale, and
-            # rotation properties intentionally do not affect point rendering.
-            sh_dc = np.column_stack([
-                vertex["f_dc_0"][selection],
-                vertex["f_dc_1"][selection],
-                vertex["f_dc_2"][selection],
-            ]).astype(np.float32, copy=False)
-            colors = (0.5 + 0.28209479177387814 * sh_dc) * 255.0
-            colors = np.nan_to_num(colors, nan=0.0, posinf=255.0, neginf=0.0)
-            return np.rint(np.clip(colors, 0, 255)).astype(np.uint8)
-        if isinstance(selection, slice):
-            selected_count = len(range(*selection.indices(len(vertex.data))))
-        else:
-            selected_count = len(selection)
-        return np.full((selected_count, 3), 255, dtype=np.uint8)
-
-    def _ply_triangles(self, ply: PlyData, vertex_count: int):
-        if "face" not in ply:
-            return np.empty((0, 3), dtype=np.int64)
-        face = ply["face"]
-        names = set(face.data.dtype.names or ())
-        index_name = next(
-            (name for name in ("vertex_indices", "vertex_index") if name in names),
-            None,
-        )
-        if index_name is None:
-            return np.empty((0, 3), dtype=np.int64)
-        polygons = face[index_name]
-        triangle_count = 0
-        for polygon in polygons:
-            triangle_count += max(0, len(polygon) - 2)
-            if triangle_count > self.MAX_MESH_TRIANGLES:
-                return None
-        try:
-            uniform = np.stack(polygons).astype(np.int64, copy=False)
-        except ValueError:
-            uniform = None
-        if uniform is not None and uniform.ndim == 2 and uniform.shape[1] >= 3:
-            triangles = np.concatenate([
-                uniform[:, (0, offset, offset + 1)]
-                for offset in range(1, uniform.shape[1] - 1)
-            ])
-            valid = (triangles >= 0).all(axis=1) & (triangles < vertex_count).all(axis=1)
-            return triangles[valid]
-
-        triangles = []
-        for polygon in polygons:
-            indices = np.asarray(polygon, dtype=np.int64)
-            if len(indices) < 3:
-                continue
-            for offset in range(1, len(indices) - 1):
-                triangle = (int(indices[0]), int(indices[offset]), int(indices[offset + 1]))
-                if min(triangle) >= 0 and max(triangle) < vertex_count:
-                    triangles.append(triangle)
-        if not triangles:
-            return np.empty((0, 3), dtype=np.int64)
-        return np.asarray(triangles, dtype=np.int64)
-
-    @staticmethod
-    def _ply_header_info(path: str) -> Dict[str, Any]:
-        elements = {}
-        current_element = None
-        file_format = None
-        face_index_name = None
-        try:
-            with open(path, "rb") as source:
-                for _ in range(10000):
-                    raw_line = source.readline()
-                    if not raw_line:
-                        raise ValueError("PLY header has no end_header")
-                    if source.tell() > 1024 * 1024:
-                        raise ValueError("PLY header exceeds 1 MiB")
-                    try:
-                        line = raw_line.decode("ascii").strip()
-                    except UnicodeDecodeError as exc:
-                        raise ValueError("PLY header is not ASCII") from exc
-                    fields = line.split()
-                    if not fields:
-                        continue
-                    if fields[0] == "format" and len(fields) >= 2:
-                        file_format = fields[1]
-                    elif fields[0] == "element" and len(fields) == 3:
-                        current_element = fields[1]
-                        elements[current_element] = int(fields[2])
-                    elif (
-                        fields[0] == "property"
-                        and current_element == "face"
-                        and len(fields) >= 5
-                        and fields[1] == "list"
-                        and fields[-1] in {"vertex_indices", "vertex_index"}
-                    ):
-                        face_index_name = fields[-1]
-                    elif fields[0] == "end_header":
-                        break
-        except OSError as exc:
-            raise ValueError(f"Unable to read PLY header: {exc}") from exc
-        if file_format is None:
-            raise ValueError("PLY header has no format declaration")
-        return {
-            "format": file_format,
-            "elements": elements,
-            "face_index_name": face_index_name,
-        }
-
-    def _vertex_selection(self, count: int):
-        if count <= self.MAX_EXTERNAL_POINTS:
-            return slice(None)
-        # Sampling isolated records evenly across a memory map faults in nearly
-        # every page of a huge PLY. Distributed contiguous blocks preserve broad
-        # coverage while touching only approximately the selected record count.
-        block_count = 64
-        block_size = (self.MAX_EXTERNAL_POINTS + block_count - 1) // block_count
-        starts = np.linspace(
-            0, max(0, count - block_size), block_count, dtype=np.int64
-        )
-        selection = np.empty(self.MAX_EXTERNAL_POINTS, dtype=np.int64)
-        cursor = 0
-        for start in starts:
-            length = min(block_size, self.MAX_EXTERNAL_POINTS - cursor)
-            selection[cursor:cursor + length] = np.arange(
-                start, start + length, dtype=np.int64
-            )
-            cursor += length
-            if cursor == self.MAX_EXTERNAL_POINTS:
-                break
-        return selection
-
-    def _selected_ply_vertices(
-        self, vertex, selection, reject_nonfinite: bool = False
-    ):
-        names = set(vertex.data.dtype.names or ())
-        if not {"x", "y", "z"}.issubset(names):
-            raise ValueError("PLY vertices must contain x, y, and z properties")
-        vertices = np.column_stack([
-            vertex["x"][selection],
-            vertex["y"][selection],
-            vertex["z"][selection],
-        ]).astype(np.float32, copy=False)
-        colors = self._ply_vertex_colors(vertex, selection)
-        finite = np.isfinite(vertices).all(axis=1)
-        if reject_nonfinite and not finite.all():
-            raise ValueError("Mesh PLY contains non-finite vertex coordinates")
-        vertices, colors = vertices[finite], colors[finite]
-        if not len(vertices):
-            raise ValueError("PLY contains no finite selected vertices")
-        return (
-            np.ascontiguousarray(vertices, dtype=np.float32),
-            np.ascontiguousarray(colors, dtype=np.uint8),
-        )
-
-    @staticmethod
-    def _memory_map_vertex_element(path: str):
-        """Map a fixed-width binary vertex element without loading others."""
-        try:
-            with open(path, "rb") as source:
-                schema = PlyData._parse_header(source)
-                data_offset = source.tell()
-                file_size = os.fstat(source.fileno()).st_size
-
-                if schema.text:
-                    raise ValueError("Memory-mapped PLY loading requires binary data")
-
-                vertex = None
-                for element in schema.elements:
-                    if element.name == "vertex":
-                        vertex = element
-                        break
-                    properties = list(element.properties)
-                    if not any(hasattr(prop, "len_dtype") for prop in properties):
-                        record_size = element.dtype(schema.byte_order).itemsize
-                        source.seek(element.count * record_size, os.SEEK_CUR)
-                        continue
-
-                    # List-valued records have no fixed stride. Scan only their
-                    # length fields and seek over their payloads, keeping memory
-                    # usage constant regardless of the preceding element size.
-                    for _ in range(element.count):
-                        for prop in properties:
-                            if hasattr(prop, "len_dtype"):
-                                len_type, value_type = prop.list_dtype(
-                                    schema.byte_order
-                                )
-                                length_dtype = np.dtype(len_type)
-                                raw_length = source.read(length_dtype.itemsize)
-                                if len(raw_length) != length_dtype.itemsize:
-                                    raise ValueError(
-                                        "PLY ended before the vertex element"
-                                    )
-                                length = int(
-                                    np.frombuffer(raw_length, dtype=length_dtype)[0]
-                                )
-                                if length < 0:
-                                    raise ValueError(
-                                        "PLY list before vertex has a negative length"
-                                    )
-                                source.seek(
-                                    length * np.dtype(value_type).itemsize,
-                                    os.SEEK_CUR,
-                                )
-                            else:
-                                source.seek(
-                                    np.dtype(prop.dtype(schema.byte_order)).itemsize,
-                                    os.SEEK_CUR,
-                                )
-                        if source.tell() > file_size:
-                            raise ValueError("PLY ended before the vertex element")
-                data_offset = source.tell()
-        except Exception as exc:
-            if isinstance(exc, ValueError):
-                raise
-            raise ValueError(f"Unable to parse PLY header: {exc}") from exc
-        if vertex is None:
-            raise ValueError("PLY contains no vertex element")
-        if any(hasattr(property_, "len_dtype") for property_ in vertex.properties):
-            raise ValueError("Memory-mapped vertex elements cannot contain list properties")
-        vertex_size = vertex.count * vertex.dtype(schema.byte_order).itemsize
-        if data_offset + vertex_size > file_size:
-            raise ValueError("PLY vertex element extends beyond end-of-file")
-        vertex.data = np.memmap(
-            path,
-            dtype=vertex.dtype(schema.byte_order),
-            mode="r",
-            offset=data_offset,
-            shape=vertex.count,
-        )
-        return vertex
-
-    def _sample_mesh_surface(
-        self,
-        vertices: np.ndarray,
-        colors: np.ndarray,
-        triangles: np.ndarray,
-    ):
-        triangle_vertices = vertices[triangles]
-        cross = np.cross(
-            triangle_vertices[:, 1] - triangle_vertices[:, 0],
-            triangle_vertices[:, 2] - triangle_vertices[:, 0],
-        )
-        area = np.linalg.norm(cross, axis=1)
-        valid = np.isfinite(area) & (area > 0)
-        triangles, area = triangles[valid], area[valid]
-        if not len(triangles):
-            return vertices, colors
-
-        sample_count = min(
-            self.MAX_EXTERNAL_POINTS,
-            max(len(vertices), 2 * len(triangles)),
-        )
-        rng = np.random.default_rng(0)
-        chosen = rng.choice(len(triangles), sample_count, p=area / area.sum())
-        sampled_triangles = triangles[chosen]
-        sampled_vertices = vertices[sampled_triangles]
-        root = np.sqrt(rng.random(sample_count, dtype=np.float32))
-        along = rng.random(sample_count, dtype=np.float32)
-        weights = np.column_stack([
-            1.0 - root,
-            root * (1.0 - along),
-            root * along,
-        ]).astype(np.float32, copy=False)
-        points = np.einsum("ni,nij->nj", weights, sampled_vertices)
-        sampled_colors = colors[sampled_triangles].astype(np.float32)
-        point_colors = np.einsum("ni,nij->nj", weights, sampled_colors)
-        return (
-            np.ascontiguousarray(points, dtype=np.float32),
-            np.clip(point_colors, 0, 255).astype(np.uint8),
-        )
-
-    def _read_ply_geometry(self, path: str):
-        header = self._ply_header_info(path)
-        vertex_count = header["elements"].get("vertex", 0)
-        face_count = header["elements"].get("face", 0)
-        if vertex_count <= 0:
-            raise ValueError("PLY contains no vertex element")
-        large_mesh = bool(face_count) and (
-            vertex_count > self.MAX_EXTERNAL_POINTS
-            or face_count > self.MAX_MESH_TRIANGLES
-        )
-        if header["format"] == "ascii" and (
-            vertex_count > self.MAX_EXTERNAL_POINTS
-            or face_count > self.MAX_MESH_TRIANGLES
-        ):
-            raise ValueError(
-                "Large ASCII PLY files are not memory-mappable; convert to binary PLY"
-            )
-        if not face_count and header["format"] != "ascii":
-            vertex = self._memory_map_vertex_element(path)
-            selection = self._vertex_selection(len(vertex))
-            vertices, colors = self._selected_ply_vertices(vertex, selection)
-            return vertices, colors, "point cloud"
-        if large_mesh:
-            index_name = header["face_index_name"]
-            if not index_name:
-                raise ValueError("Large mesh PLY has no face vertex-index property")
-            # Parse the schema with plyfile, then map only the vertex records.
-            # Mapping a later face element would retain gigabytes of
-            # address space even though this bounded fallback never reads it.
-            vertex = self._memory_map_vertex_element(path)
-            selection = self._vertex_selection(len(vertex))
-            vertices, colors = self._selected_ply_vertices(vertex, selection)
-            return vertices, colors, "mesh vertices"
-        try:
-            ply = PlyData.read(path)
-        except Exception as exc:
-            raise ValueError(f"Unable to read PLY: {exc}") from exc
-        vertex = ply["vertex"]
-        if not face_count:
-            selection = self._vertex_selection(len(vertex))
-            vertices, colors = self._selected_ply_vertices(vertex, selection)
-            return vertices, colors, "point cloud"
-
-        vertices, colors = self._selected_ply_vertices(
-            vertex, slice(None), reject_nonfinite=True
-        )
-        triangles = self._ply_triangles(ply, len(vertex))
-        if triangles is None:
-            selection = self._vertex_selection(len(vertices))
-            return (
-                np.ascontiguousarray(vertices[selection], dtype=np.float32),
-                np.ascontiguousarray(colors[selection], dtype=np.uint8),
-                "mesh vertices",
-            )
-        if len(triangles):
-            points, point_colors = self._sample_mesh_surface(
-                vertices, colors, triangles
-            )
-            return points, point_colors, "mesh"
-        return (
-            np.ascontiguousarray(vertices, dtype=np.float32),
-            np.ascontiguousarray(colors, dtype=np.uint8),
-            "point cloud",
-        )
+        colmap_count = len(self.reconstruction.points3D) if self.reconstruction else 0
+        return self._geometry_store.status(request_stream, colmap_count)
 
     def load_external_geometry(
         self,
@@ -670,39 +197,26 @@ class ColmapService:
             upload_token = self.begin_external_geometry_upload(stream)
         try:
             if not as_default:
-                with self._geometry_lock:
-                    if self._pending_geometry_streams.get(stream) != upload_token:
-                        raise GeometryUploadSuperseded(
-                            "A newer geometry upload replaced this request"
-                        )
-            points, colors, kind = self._read_ply_geometry(path)
+                self._geometry_store.require_current_upload(stream, upload_token)
+            points, colors, kind = self._ply_loader.load(path)
             content_hash = hashlib.sha256()
             with open(path, "rb") as geometry_file:
                 for chunk in iter(lambda: geometry_file.read(1024 * 1024), b""):
                     content_hash.update(chunk)
             points.setflags(write=False)
             colors.setflags(write=False)
-            with self._geometry_lock:
-                self._geometry_revision_sequence += 1
-                geometry = GeometryData(
-                    xyz=points,
-                    rgb=colors,
-                    name=display_name or os.path.basename(path),
-                    kind=kind,
-                    revision=self._geometry_revision_sequence,
-                    cache_token=content_hash.hexdigest()[:16],
-                )
-                if as_default:
-                    self._default_geometry = geometry
-                else:
-                    if self._pending_geometry_streams.get(stream) != upload_token:
-                        raise GeometryUploadSuperseded(
-                            "A newer geometry upload replaced this request"
-                        )
-                    self._stream_geometries[stream] = geometry
-                    self._stream_geometries.move_to_end(stream)
-                    self._colmap_streams.discard(stream)
-                    self._stream_last_seen[stream] = time.monotonic()
+            geometry = GeometryData(
+                xyz=points,
+                rgb=colors,
+                name=display_name or os.path.basename(path),
+                kind=kind,
+                revision=self._geometry_store.next_revision(),
+                cache_token=content_hash.hexdigest()[:16],
+            )
+            if as_default:
+                self._geometry_store.set_default(geometry)
+            else:
+                self._geometry_store.install(stream, upload_token, geometry)
         finally:
             if not as_default:
                 self.cancel_external_geometry_upload(stream, upload_token)
@@ -710,20 +224,7 @@ class ColmapService:
         return self.get_geometry_status(status_stream)
 
     def reset_external_geometry(self, request_stream: str = "default"):
-        stream = self._request_stream(request_stream)
-        with self._geometry_lock:
-            self._expire_idle_geometry_streams_locked()
-            if (
-                stream not in self._colmap_streams
-                and len(self._colmap_streams) >= self.MAX_COLMAP_STREAM_SELECTIONS
-            ):
-                raise GeometryCapacityError(
-                    "The server has too many explicit COLMAP viewer selections"
-                )
-            self._stream_geometries.pop(stream, None)
-            self._colmap_streams.add(stream)
-            self._pending_geometry_streams.pop(stream, None)
-            self._stream_last_seen[stream] = time.monotonic()
+        self._geometry_store.reset_to_colmap(request_stream)
         self.start_reprojection_warmup()
         return self.get_geometry_status(request_stream)
 
@@ -731,7 +232,7 @@ class ColmapService:
         """Build compact geometry arrays in the background before first use."""
         if not self.has_reprojection_data():
             return
-        with self._geometry_lock:
+        with self._geometry_build_lock:
             if self._colmap_geometry is not None or self._warmup_started:
                 return
             self._warmup_started = True
@@ -767,14 +268,6 @@ class ColmapService:
         camera = self.reconstruction.cameras[image.camera_id]
         return image, camera
 
-    def _preview_geometry(self, camera, max_size: int):
-        if not 320 <= max_size <= 4096:
-            raise ValueError("max_size must be between 320 and 4096")
-        scale = min(1.0, max_size / max(camera.width, camera.height))
-        width = max(1, round(camera.width * scale))
-        height = max(1, round(camera.height * scale))
-        return width, height, scale
-
     def _source_image_path(self, image_name: str) -> str:
         # Validate the lexical path before following symlinks. A symlink stored
         # inside the configured image tree is intentional and may legitimately
@@ -788,12 +281,6 @@ class ColmapService:
         return image_path
 
     @staticmethod
-    def _encode_png(array: np.ndarray) -> bytes:
-        output = io.BytesIO()
-        Image.fromarray(array, "RGB").save(output, format="PNG", compress_level=2)
-        return output.getvalue()
-
-    @staticmethod
     def _encode_jpeg(array: np.ndarray) -> bytes:
         output = io.BytesIO()
         Image.fromarray(array, "RGB").save(
@@ -802,39 +289,10 @@ class ColmapService:
         return output.getvalue()
 
     def _cache_get(self, key: tuple) -> Optional[bytes]:
-        with self._cache_lock:
-            return self._png_cache.get(key)
+        return self._png_cache.get(key)
 
     def _cache_put(self, key: tuple, value: bytes) -> bytes:
-        with self._cache_lock:
-            if key in self._png_cache:
-                self._png_cache_order.remove(key)
-            self._png_cache[key] = value
-            self._png_cache_order.append(key)
-            while len(self._png_cache_order) > 20:
-                oldest = self._png_cache_order.pop(0)
-                self._png_cache.pop(oldest, None)
-        return value
-
-    def _splat_cache_get(self, key: tuple):
-        with self._cache_lock:
-            value = self._splat_cache.get(key)
-            if value is not None:
-                self._splat_cache_order.remove(key)
-                self._splat_cache_order.append(key)
-            return value
-
-    def _splat_cache_put(self, key: tuple, value: tuple):
-        with self._cache_lock:
-            if key in self._splat_cache:
-                self._splat_cache_order.remove(key)
-            self._splat_cache[key] = value
-            self._splat_cache_order.append(key)
-            # Packed depth/source buffers are intentionally limited: each one
-            # is roughly 20 MB at the default preview resolution.
-            while len(self._splat_cache_order) > 2:
-                oldest = self._splat_cache_order.pop(0)
-                self._splat_cache.pop(oldest, None)
+        return self._png_cache.put(key, value)
 
     @staticmethod
     def _request_stream(request_stream: str) -> str:
@@ -842,44 +300,11 @@ class ColmapService:
         # frontend uses a UUID, while "default" preserves API compatibility.
         return (request_stream or "default")[:128]
 
-    @staticmethod
-    def _remember_latest_request(requests, stream: str, request_id: int):
-        requests[stream] = request_id
-        requests.move_to_end(stream)
-        while len(requests) > 256:
-            requests.popitem(last=False)
-
-    def _new_render_request(self, request_stream: str) -> int:
-        stream = self._request_stream(request_stream)
-        with self._render_request_lock:
-            self._render_request_sequence += 1
-            request_id = self._render_request_sequence
-            self._remember_latest_request(
-                self._latest_render_requests, stream, request_id
-            )
-            return request_id
-
-    def _check_render_request(self, request_stream: str, request_id: int):
-        stream = self._request_stream(request_stream)
-        with self._render_request_lock:
-            if request_id != self._latest_render_requests.get(stream):
-                raise RenderSuperseded()
-
     def _new_input_request(self, request_stream: str) -> int:
-        stream = self._request_stream(request_stream)
-        with self._input_request_lock:
-            self._input_request_sequence += 1
-            request_id = self._input_request_sequence
-            self._remember_latest_request(
-                self._latest_input_requests, stream, request_id
-            )
-            return request_id
+        return self._input_requests.begin(request_stream)
 
     def _check_input_request(self, request_stream: str, request_id: int):
-        stream = self._request_stream(request_stream)
-        with self._input_request_lock:
-            if request_id != self._latest_input_requests.get(stream):
-                raise InputSuperseded()
+        self._input_requests.check(request_stream, request_id)
 
     def get_reprojection_input_image(
         self,
@@ -896,7 +321,7 @@ class ColmapService:
 
         request_id = self._new_input_request(request_stream)
         image, camera = self._get_reprojection_image(image_id)
-        width, height, _ = self._preview_geometry(camera, max_size)
+        width, height, _ = self._renderer.preview_geometry(camera, max_size)
         with self._input_lock:
             cached = self._cache_get(cache_key)
             if cached is not None:
@@ -924,7 +349,7 @@ class ColmapService:
     def _ensure_geometry_arrays(self) -> GeometryData:
         if self._colmap_geometry is not None:
             return self._colmap_geometry
-        with self._geometry_lock:
+        with self._geometry_build_lock:
             if self._colmap_geometry is not None:
                 return self._colmap_geometry
             if not self.reconstruction:
@@ -950,185 +375,10 @@ class ColmapService:
             return self._colmap_geometry
 
     def _geometry_for_stream(self, request_stream: str) -> GeometryData:
-        with self._geometry_lock:
-            stream = self._touch_geometry_stream_locked(request_stream)
-            geometry = self._selected_geometry_locked(stream)
+        geometry = self._geometry_store.selected(request_stream)
         if geometry is not None:
             return geometry
         return self._ensure_geometry_arrays()
-
-    @staticmethod
-    def _depth_colors(depth: np.ndarray) -> np.ndarray:
-        """Small dependency-free blue/cyan/yellow/red depth palette."""
-        low, high = np.percentile(depth, [2, 98])
-        value = np.clip((depth - low) / max(float(high - low), 1e-6), 0, 1)
-        anchors = np.asarray([
-            [255, 40, 40],
-            [255, 220, 30],
-            [20, 220, 220],
-            [40, 80, 255],
-        ], dtype=np.float32)
-        position = value * (len(anchors) - 1)
-        left = np.floor(position).astype(np.int64)
-        right = np.minimum(left + 1, len(anchors) - 1)
-        blend = (position - left)[:, None]
-        return np.uint8(anchors[left] * (1 - blend) + anchors[right] * blend)
-
-    def _get_reprojection_base(
-        self,
-        image_id: int,
-        max_size: int,
-        color_mode: str,
-        geometry: GeometryData,
-        need_splat_data: bool = False,
-        request_stream: str = "default",
-    ):
-        """Return a one-pixel PNG or its cached depth-aware splat buffers."""
-        geometry_token = geometry.cache_token
-        cache_key = (
-            "render-base", geometry_token, image_id, max_size, color_mode
-        )
-        splat_key = (geometry_token, image_id, max_size, color_mode)
-        cached = self._cache_get(cache_key)
-        splat_cached = self._splat_cache_get(splat_key)
-        if need_splat_data:
-            if splat_cached is not None:
-                return splat_cached
-        elif cached is not None:
-            return cached
-        elif splat_cached is not None:
-            encoded = self._encode_png(splat_cached[0])
-            return self._cache_put(cache_key, encoded)
-
-        request_id = self._new_render_request(request_stream)
-        self._check_render_request(request_stream, request_id)
-        image, camera = self._get_reprojection_image(image_id)
-        width, height, scale = self._preview_geometry(camera, max_size)
-
-        # Avoid simultaneous transforms of a multi-million-point cloud.
-        with self._render_lock:
-            cached = self._cache_get(cache_key)
-            splat_cached = self._splat_cache_get(splat_key)
-            if need_splat_data:
-                if splat_cached is not None:
-                    return splat_cached
-            elif cached is not None:
-                return cached
-            elif splat_cached is not None:
-                encoded = self._encode_png(splat_cached[0])
-                return self._cache_put(cache_key, encoded)
-            # Requests waiting behind the lock are cheap to discard. Only the
-            # most recently requested camera is allowed to start projection.
-            self._check_render_request(request_stream, request_id)
-            xyz, rgb = geometry.xyz, geometry.rgb
-            pose_accessor = image.cam_from_world
-            pose = pose_accessor() if callable(pose_accessor) else pose_accessor
-            matrix = np.asarray(pose.matrix(), dtype=np.float32)
-            xyz_camera = xyz @ matrix[:, :3].T + matrix[:, 3]
-            self._check_render_request(request_stream, request_id)
-            z = xyz_camera[:, 2]
-            is_pinhole = camera.model_name in {"PINHOLE", "SIMPLE_PINHOLE"}
-            # Exact pre-projection frustum test for the pinhole models. This
-            # avoids running camera projection for off-screen positive-depth
-            # points (all cameras in the current dataset are PINHOLE).
-            if is_pinhole:
-                if camera.model_name == "PINHOLE":
-                    fx, fy, cx, cy = camera.params
-                else:
-                    fx, cx, cy = camera.params
-                    fy = fx
-                x_world_camera = xyz_camera[:, 0]
-                y_world_camera = xyz_camera[:, 1]
-                # Match the final preview-pixel bounds exactly so no second
-                # in-frame filtering/copy is needed after projection.
-                left = ((-0.5 / scale) - cx) / fx
-                right = (((width - 0.5) / scale) - cx) / fx
-                top = ((-0.5 / scale) - cy) / fy
-                bottom = (((height - 0.5) / scale) - cy) / fy
-                visible = ne.evaluate(
-                    "(z > 1e-6) & (x_world_camera >= left*z) "
-                    "& (x_world_camera < right*z) "
-                    "& (y_world_camera >= top*z) "
-                    "& (y_world_camera < bottom*z)"
-                )
-            else:
-                visible = z > 1e-6
-            xyz_camera = xyz_camera[visible]
-            colors = rgb[visible]
-
-            canvas = np.zeros((height, width, 3), dtype=np.uint8)
-            zbuffer = np.full(height * width, np.inf, dtype=np.float32)
-            if len(xyz_camera):
-                if is_pinhole:
-                    x_camera = xyz_camera[:, 0]
-                    y_camera = xyz_camera[:, 1]
-                    depth = xyz_camera[:, 2]
-                    u = ne.evaluate("(fx*x_camera/depth + cx)*scale")
-                    v = ne.evaluate("(fy*y_camera/depth + cy)*scale")
-                    x = np.rint(u).astype(np.int64, copy=False)
-                    y = np.rint(v).astype(np.int64, copy=False)
-                    # Only floating-point boundary noise can reach the clamp;
-                    # the fused frustum test above already enforces bounds.
-                    np.clip(x, 0, width - 1, out=x)
-                    np.clip(y, 0, height - 1, out=y)
-                else:
-                    # pycolmap handles arbitrary distorted/fisheye models.
-                    uv = np.asarray(camera.img_from_cam(xyz_camera), dtype=np.float32) * scale
-                    finite = np.isfinite(uv).all(axis=1)
-                    uv, xyz_camera, colors = uv[finite], xyz_camera[finite], colors[finite]
-                    x = np.rint(uv[:, 0]).astype(np.int64, copy=False)
-                    y = np.rint(uv[:, 1]).astype(np.int64, copy=False)
-                    inside = (x >= 0) & (x < width) & (y >= 0) & (y < height)
-                    x, y = x[inside], y[inside]
-                    depth = xyz_camera[inside, 2]
-                    colors = colors[inside]
-                self._check_render_request(request_stream, request_id)
-
-                if len(depth):
-                    pixel = y * width + x
-                    np.minimum.at(zbuffer, pixel, depth)
-                    front = depth <= zbuffer[pixel] * (1.0 + 1e-6)
-                    pixel, depth, colors = pixel[front], depth[front], colors[front]
-                    if color_mode == "depth":
-                        colors = self._depth_colors(depth)
-                    elif color_mode == "white":
-                        colors = np.full_like(colors, 255)
-                    canvas.reshape(-1, 3)[pixel] = colors
-
-            self._check_render_request(request_stream, request_id)
-            # Positive IEEE-754 float bits preserve depth ordering. Packing the
-            # depth bits with the source pixel index lets OpenCV morphology
-            # return both the nearest depth and the exact winning color source.
-            pixel_count = width * height
-            source_modulus = pixel_count + 1
-            index_bits = source_modulus.bit_length()
-            depth_bits = max(8, 53 - index_bits)
-            depth_shift = max(0, 31 - depth_bits)
-            sentinel_rank = 2**depth_bits - 1
-            sentinel = sentinel_rank * source_modulus + pixel_count
-            packed = np.full(pixel_count, float(sentinel), dtype=np.float64)
-            finite_depth = np.isfinite(zbuffer)
-            source_pixels = np.flatnonzero(finite_depth).astype(np.int64)
-            if len(source_pixels):
-                depth_rank = (
-                    zbuffer[finite_depth].view(np.uint32).astype(np.int64)
-                    >> depth_shift
-                )
-                packed[source_pixels] = (
-                    depth_rank * source_modulus + source_pixels
-                ).astype(np.float64)
-            splat_data = (
-                canvas,
-                packed.reshape(height, width),
-                float(sentinel),
-                source_modulus,
-            )
-            self._splat_cache_put(splat_key, splat_data)
-            if need_splat_data:
-                # Return the strong local reference. Another request may evict
-                # this entry immediately after the render lock is released.
-                return splat_data
-            return self._cache_put(cache_key, self._encode_png(canvas))
 
     def get_reprojection_render_png(
         self,
@@ -1138,52 +388,19 @@ class ColmapService:
         radius: int = 1,
         request_stream: str = "default",
     ) -> bytes:
-        """Project every point, reusing projection when only size changes."""
-        if color_mode not in {"rgb", "depth", "white"}:
-            raise ValueError("color_mode must be rgb, depth, or white")
-        if not 0 <= radius <= 7:
-            raise ValueError("radius must be between 0 and 7")
-
+        """Render the selected geometry through a reconstruction camera."""
         geometry = self._geometry_for_stream(request_stream)
-        geometry_token = geometry.cache_token
-        cache_key = (
-            "render-sized", geometry_token,
-            image_id, max_size, color_mode, radius,
-        )
-        if radius > 0:
-            cached = self._cache_get(cache_key)
-            if cached is not None:
-                return cached
-
-        base = self._get_reprojection_base(
-            image_id,
-            max_size,
-            color_mode,
-            geometry,
-            need_splat_data=radius > 0,
+        image, camera = self._get_reprojection_image(image_id)
+        return self._renderer.render_png(
+            image_id=image_id,
+            image=image,
+            camera=camera,
+            geometry=geometry,
+            max_size=max_size,
+            color_mode=color_mode,
+            radius=radius,
             request_stream=request_stream,
         )
-        if radius == 0:
-            return base
-
-        # Expand packed depth/source keys, not RGB values. Erosion selects the
-        # nearest source point over every enlarged footprint, then its original
-        # color is copied. Thus point-size changes remain depth-tested.
-        base_color, packed, sentinel, source_modulus = base
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
-        )
-        winners = cv2.erode(
-            packed,
-            kernel,
-            borderType=cv2.BORDER_CONSTANT,
-            borderValue=sentinel,
-        ).reshape(-1)
-        valid = winners < sentinel
-        winner_pixels = winners[valid].astype(np.int64) % source_modulus
-        canvas = np.zeros_like(base_color)
-        canvas.reshape(-1, 3)[valid] = base_color.reshape(-1, 3)[winner_pixels]
-        return self._cache_put(cache_key, self._encode_png(canvas))
 
     def _get_images_from_recon(self) -> List[Dict[str, Any]]:
         if not self.reconstruction:

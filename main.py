@@ -6,14 +6,13 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from colmap_service import (
-    ColmapService,
-    DataSource,
+from colmap_service import ColmapService
+from reprojection_core import (
     GeometryCapacityError,
     GeometryUploadSuperseded,
     InputSuperseded,

@@ -66,6 +66,16 @@ python main.py -i /path/to/your/images -d /path/to/your/colmap/database.db
 
 Then, open your web browser and navigate to `http://localhost:8000`.
 
+## Tests
+
+Run the backend regression suite and the dependency-free browser identity test:
+
+```bash
+python -m unittest discover -s tests
+node tests/viewer_stream_test.js
+node tests/reprojection_request_test.js
+```
+
 ## UI Overview
 
 The user interface consists of a control panel on the left and a viewer on the right.
@@ -152,7 +162,7 @@ The following API endpoints are available:
 *   [fastapi](https://fastapi.tiangolo.com/)
 *   [uvicorn](https://www.uvicorn.org/)
 *   [pycolmap](https://github.com/colmap/pycolmap)
-*   [numpy](httpshttps://numpy.org/)
+*   [numpy](https://numpy.org/)
 *   [Pillow](https://python-pillow.org/)
 *   [plyfile](https://github.com/dranjan/python-plyfile)
 *   [jinja2](https://jinja.palletsprojects.com/)
