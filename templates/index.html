@@ -23,10 +23,24 @@
                     <select id="source-select"></select>
                 </div>
                 <div class="image-selection">
-                    <label for="image1-select">Image 1:</label>
+                    <label for="image1-select" class="image-selection-label">
+                        <span>Image 1:</span>
+                        <span class="image-navigation-keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></span>
+                    </label>
                     <select id="image1-select"></select>
-                    <label for="image2-select">Image 2:</label>
+                    <label for="image2-select" class="image-selection-label">
+                        <span>Image 2:</span>
+                        <span class="image-navigation-keys"><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span>
+                    </label>
                     <select id="image2-select"></select>
+                    <div id="generated-pair-options" class="generated-pair-options" hidden>
+                        <div id="generated-pair-message"
+                             class="generated-pair-message"></div>
+                        <label for="pose-neighbor-limit">Maximum generated neighbors:</label>
+                        <input id="pose-neighbor-limit" type="number"
+                               value="{{ default_pose_neighbors }}" min="1"
+                               max="{{ max_pose_neighbors }}" step="1">
+                    </div>
                 </div>
                 <div class="display-options">
                     <label>
@@ -162,6 +176,7 @@
 
         <div class="viewer" id="matching-viewer">
             <canvas id="match-canvas" style="position: absolute; top: 0; left: 0; z-index: 10; pointer-events: none;"></canvas>
+            <canvas id="epipolar-canvas" class="epipolar-canvas"></canvas>
             <div class="image-panel">
                 <canvas id="image1-canvas"></canvas>
             </div>
@@ -189,6 +204,7 @@
         </div>
     </div>
 
+    <script src="/static/js/epipolar.js"></script>
     <script src="/static/js/main.js"></script>
     <script src="/static/js/viewer_stream.js"></script>
     <script src="/static/js/reprojection_split.js"></script>

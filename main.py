@@ -49,7 +49,14 @@ templates = Jinja2Templates(
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "default_pose_neighbors": ColmapService.DEFAULT_POSE_NEIGHBORS,
+            "max_pose_neighbors": ColmapService.MAX_POSE_NEIGHBORS,
+        },
+    )
 
 
 @app.get("/serve_image/{image_path:path}")
@@ -274,8 +281,14 @@ async def get_image_data(image_id: int):
 
 
 @app.get("/api/matches_for_image/{image_id}")
-async def get_matches_for_image(image_id: int):
-    return colmap_service.get_matches_for_image(image_id)
+async def get_matches_for_image(
+    image_id: int,
+    response: Response,
+    max_neighbors: int = ColmapService.DEFAULT_POSE_NEIGHBORS,
+):
+    candidates = colmap_service.get_pair_candidates(image_id, max_neighbors)
+    response.headers["X-Pair-Candidate-Source"] = candidates["source"]
+    return candidates["image_ids"]
 
 
 @app.get("/api/matches/{image_id1}/{image_id2}")
@@ -285,6 +298,16 @@ async def get_matches(image_id1: int, image_id2: int, match_type: Optional[str] 
         # This can happen if there are no matches, which is not an error.
         return []
     return matches
+
+
+@app.get("/api/epipolar/{image_id1}/{image_id2}")
+async def get_epipolar_geometry(image_id1: int, image_id2: int):
+    try:
+        return colmap_service.get_epipolar_geometry(image_id1, image_id2)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Image not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/match_summary/{image_id1}/{image_id2}")

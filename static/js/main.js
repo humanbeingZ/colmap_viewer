@@ -7,11 +7,16 @@ const image2Canvas = document.getElementById("image2-canvas");
 const matchCanvas = document.getElementById("match-canvas");
 const showMarkersCheckbox = document.getElementById("show-markers");
 const drawMatchesButton = document.getElementById("draw-matches");
+const drawEpipolarButton = document.getElementById("draw-epipolar");
 const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
 const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
 const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
 const resetViewButton = document.getElementById("reset-view");
 const matchSummaryContent = document.getElementById("match-summary-content");
+const epipolarCanvas = document.getElementById("epipolar-canvas");
+const generatedPairOptions = document.getElementById("generated-pair-options");
+const generatedPairMessage = document.getElementById("generated-pair-message");
+const poseNeighborLimit = document.getElementById("pose-neighbor-limit");
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
@@ -154,9 +159,31 @@ async function updateMatchSummary() {
 }
 
 const canvasStates = {
-    image1: { scale: 1, translateX: 0, translateY: 0, isDragging: false, lastMouseX: 0, lastMouseY: 0 },
-    image2: { scale: 1, translateX: 0, translateY: 0, isDragging: false, lastMouseX: 0, lastMouseY: 0 },
+    image1: {
+        scale: 1, translateX: 0, translateY: 0,
+        viewportWidth: 0, viewportHeight: 0, pixelRatio: 1,
+        isDragging: false, lastMouseX: 0, lastMouseY: 0,
+    },
+    image2: {
+        scale: 1, translateX: 0, translateY: 0,
+        viewportWidth: 0, viewportHeight: 0, pixelRatio: 1,
+        isDragging: false, lastMouseX: 0, lastMouseY: 0,
+    },
 };
+
+const epipolarTool = new EpipolarTool({
+    button: drawEpipolarButton,
+    overlay: epipolarCanvas,
+    viewer: document.getElementById("matching-viewer"),
+    canvases: [image1Canvas, image2Canvas],
+    getPair: () => [image1Select.value, image2Select.value],
+    getSourceKey: () => sourceSelect.value,
+    getImageData: canvasKey => (
+        canvasKey === "image1" ? currentImage1Data : currentImage2Data
+    ),
+    getCanvasState: canvasKey => canvasStates[canvasKey],
+    imageToOverlay: imageToCanvas,
+});
 
 // --- Initialization ---
 
@@ -235,14 +262,25 @@ async function fetchImageData(imageId) {
 
 async function fetchMatchesForImage(imageId) {
     try {
-        const response = await fetch(`/api/matches_for_image/${imageId}`);
+        const minimum = Number(poseNeighborLimit.min);
+        const maximum = Number(poseNeighborLimit.max);
+        const fallback = Number(poseNeighborLimit.defaultValue);
+        const requested = Number(poseNeighborLimit.value) || fallback;
+        const limit = Math.max(minimum, Math.min(maximum, requested));
+        poseNeighborLimit.value = limit;
+        const response = await fetch(
+            `/api/matches_for_image/${imageId}?max_neighbors=${limit}`
+        );
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        return await response.json();
+        return {
+            imageIds: await response.json(),
+            source: response.headers.get("X-Pair-Candidate-Source") || "matches",
+        };
     } catch (error) {
         console.error("Error fetching matched images:", error);
-        return [];
+        return {imageIds: [], source: "none"};
     }
 }
 
@@ -306,11 +344,20 @@ function populateImageSelects() {
 async function updateImage2List() {
     const imageId1 = image1Select.value;
     if (!imageId1) {
+        generatedPairOptions.hidden = true;
         populateImageSelects(); // Reset to full list if no image is selected
         return;
     }
 
-    const matchedImageIds = await fetchMatchesForImage(imageId1);
+    const previousImage2 = image2Select.value;
+    const {imageIds: matchedImageIds, source} = await fetchMatchesForImage(imageId1);
+    const generated = source === "pose_neighbors";
+    generatedPairOptions.hidden = !generated;
+    if (generated) {
+        generatedPairMessage.textContent =
+            `No matching information found. Showing ${matchedImageIds.length} `
+            + "pairs generated from camera positions and viewing directions.";
+    }
     const matchedImageIdsSet = new Set(matchedImageIds);
 
     const filteredImages = allImages.filter((image) => matchedImageIdsSet.has(image.id));
@@ -323,20 +370,38 @@ async function updateImage2List() {
         option.textContent = `${originalIndex}: ${image.name}`;
         image2Select.appendChild(option);
     });
+    if (previousImage2 && matchedImageIdsSet.has(Number(previousImage2))) {
+        image2Select.value = previousImage2;
+    }
 }
 
 // --- Canvas Drawing Functions ---
 
 function resetCanvasState(canvas, imageElement, state) {
     const panel = canvas.parentElement;
-    canvas.width = panel.clientWidth;
-    canvas.height = panel.clientHeight;
+    const width = panel.clientWidth;
+    const height = panel.clientHeight;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    canvas.width = Math.max(1, Math.round(width * pixelRatio));
+    canvas.height = Math.max(1, Math.round(height * pixelRatio));
+    state.viewportWidth = width;
+    state.viewportHeight = height;
+    state.pixelRatio = pixelRatio;
 
-    const scaleX = canvas.width / imageElement.width;
-    const scaleY = canvas.height / imageElement.height;
+    const imageWidth = imageElement.naturalWidth || imageElement.width;
+    const imageHeight = imageElement.naturalHeight || imageElement.height;
+    const scaleX = width / imageWidth;
+    const scaleY = height / imageHeight;
     state.scale = Math.min(scaleX, scaleY);
-    state.translateX = (canvas.width - imageElement.width * state.scale) / 2;
-    state.translateY = (canvas.height - imageElement.height * state.scale) / 2;
+    state.translateX = (width - imageWidth * state.scale) / 2;
+    state.translateY = (height - imageHeight * state.scale) / 2;
+}
+
+function clearCanvas(canvas, ctx) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPanel) {
@@ -344,14 +409,14 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
     const state = canvasStates[canvasKey];
 
     if (!imageId) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        clearCanvas(canvas, ctx);
         if (isLeftPanel) { currentImage1Data = null; } else { currentImage2Data = null; }
         return;
     }
 
     const imageData = await fetchImageData(imageId);
     if (!imageData) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        clearCanvas(canvas, ctx);
         return;
     }
 
@@ -377,16 +442,24 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     const imageElement = canvasKey === "image1" ? currentImage1 : currentImage2;
     const imageData = canvasKey === "image1" ? currentImage1Data : currentImage2Data;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    clearCanvas(canvas, ctx);
 
     if (!imageElement.src || !imageData) {
         return;
     }
 
     ctx.save();
+    ctx.setTransform(state.pixelRatio, 0, 0, state.pixelRatio, 0, 0);
     ctx.translate(state.translateX, state.translateY);
     ctx.scale(state.scale, state.scale);
-    ctx.drawImage(imageElement, 0, 0, imageElement.width, imageElement.height);
+    ctx.imageSmoothingEnabled = state.scale * state.pixelRatio < 1;
+    ctx.drawImage(
+        imageElement,
+        0,
+        0,
+        imageElement.naturalWidth || imageElement.width,
+        imageElement.naturalHeight || imageElement.height
+    );
 
     if (showMarkersCheckbox.checked) {
         drawFeaturePoints(ctx, imageData.points2D, state.scale, canvasKey);
@@ -441,6 +514,7 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
 }
 
 function drawMatches() {
+    epipolarTool.syncPair();
     matchCanvas.width = matchCanvas.parentElement.clientWidth;
     matchCanvas.height = matchCanvas.parentElement.clientHeight;
     matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
@@ -588,6 +662,17 @@ image2Select.addEventListener("change", async () => {
     drawMatches();
 });
 
+poseNeighborLimit.addEventListener("change", async () => {
+    if (generatedPairOptions.hidden || !image1Select.value) {
+        return;
+    }
+    const previousImage2 = image2Select.value;
+    await updateImage2List();
+    if (previousImage2 && image2Select.value !== previousImage2) {
+        image2Select.dispatchEvent(new Event("change"));
+    }
+});
+
 showMarkersCheckbox.addEventListener("change", () => {
     redrawCanvas(image1Canvas, ctx1, "image1");
     redrawCanvas(image2Canvas, ctx2, "image2");
@@ -630,6 +715,7 @@ resetViewButton.addEventListener("click", () => {
         redrawCanvas(image2Canvas, ctx2, "image2");
     }
     drawMatches();
+    epipolarTool.scheduleDraw();
 });
 
 async function handleFetchMatches() {
@@ -859,5 +945,6 @@ function isPointVisible(point, canvasKey) {
     const x_in_canvas = point.x * state.scale + state.translateX;
     const y_in_canvas = point.y * state.scale + state.translateY;
 
-    return x_in_canvas >= 0 && x_in_canvas <= canvas.width && y_in_canvas >= 0 && y_in_canvas <= canvas.height;
+    return x_in_canvas >= 0 && x_in_canvas <= state.viewportWidth
+        && y_in_canvas >= 0 && y_in_canvas <= state.viewportHeight;
 }

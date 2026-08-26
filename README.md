@@ -77,6 +77,7 @@ node tests/reprojection_request_test.js
 node tests/reprojection_split_test.js
 node tests/reprojection_point_size_test.js
 node tests/reprojection_interaction_test.js
+node tests/epipolar_test.js
 ```
 
 ## UI Overview
@@ -87,6 +88,7 @@ The user interface consists of a control panel on the left and a viewer on the r
     *   **Viewer Mode:** Switch between feature-match inspection and 3D reprojection.
     *   **Data Source:** Select the data source (if multiple are available).
     *   **Image Selection:** Select the two images to compare. You can also use the arrow keys (Up/Down/Left/Right) to cycle through the second image list.
+        Reconstructions without point tracks use nearby, similarly oriented camera poses as image-pair candidates. The viewer labels these generated pairs and lets you configure their maximum count.
     *   **Display Options:**
         *   **Show Markers:** Toggle the visibility of feature markers.
         *   **Show only matched markers:** Show only the markers that have a match in the other image.

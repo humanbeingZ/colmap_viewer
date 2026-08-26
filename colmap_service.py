@@ -8,6 +8,7 @@ from enum import Enum
 
 import numpy as np
 from PIL import Image
+from epipolar_geometry import PoseNeighborIndex, fundamental_matrix
 from ply_geometry import PlyGeometryLoader
 from reprojection_core import (
     BoundedLRUCache,
@@ -45,6 +46,8 @@ class ColmapService:
     MAX_COLMAP_STREAM_SELECTIONS = 1024
     STREAM_IDLE_TIMEOUT_SECONDS = 10 * 60
     MAX_REPROJECTION_SIZE = ReprojectionRenderer.MAX_PREVIEW_SIZE
+    DEFAULT_POSE_NEIGHBORS = 32
+    MAX_POSE_NEIGHBORS = 256
 
     def __init__(
         self,
@@ -74,6 +77,8 @@ class ColmapService:
         # Geometry arrays are intentionally initialized only when reprojection
         # mode is first used. Match-only sessions do not pay the memory cost.
         self._geometry_build_lock = threading.Lock()
+        self._pose_neighbor_lock = threading.Lock()
+        self._pose_neighbor_index: Optional[PoseNeighborIndex] = None
         self._colmap_geometry: Optional[GeometryData] = None
         self._geometry_store = ViewerGeometryStore(
             max_uploaded_geometries=self.MAX_STREAM_GEOMETRIES,
@@ -507,37 +512,82 @@ class ColmapService:
             return self._get_image_data_from_db(image_id)
         return None
 
-    def get_matches_for_image(self, image_id: int) -> List[int]:
-        """Returns a list of image IDs that have matches with the given image ID."""
-        if self.db:
-            all_images = self.get_images()
-            image_ids = {img['id'] for img in all_images}
-            matched_image_ids = []
-            for other_image_id in image_ids:
-                if image_id == other_image_id:
-                    continue
+    def get_epipolar_geometry(self, image_id1: int, image_id2: int) -> Dict[str, Any]:
+        """Return pose-derived straight-line epipolar geometry for an image pair."""
+        if self.active_source != DataSource.SFM_MODEL or not self.reconstruction:
+            raise ValueError(
+                "Epipolar pose inspection requires an SfM model with registered poses"
+            )
+        if image_id1 not in self.reconstruction.images:
+            raise KeyError(image_id1)
+        if image_id2 not in self.reconstruction.images:
+            raise KeyError(image_id2)
+        image1 = self.reconstruction.images[image_id1]
+        image2 = self.reconstruction.images[image_id2]
+        camera1 = self.reconstruction.cameras[image1.camera_id]
+        camera2 = self.reconstruction.cameras[image2.camera_id]
+        matrix = fundamental_matrix(image1, camera1, image2, camera2)
+        return {
+            "fundamental_matrix": matrix.tolist(),
+            "image1": {"width": int(camera1.width), "height": int(camera1.height)},
+            "image2": {"width": int(camera2.width), "height": int(camera2.height)},
+        }
 
-                if not self.db.exists_matches(image_id, other_image_id):
-                    continue
+    def get_pair_candidates(
+        self, image_id: int, max_pose_neighbors: int = DEFAULT_POSE_NEIGHBORS
+    ) -> Dict[str, Any]:
+        """Return pair candidates from the currently selected data source."""
+        if self.active_source == DataSource.DATABASE:
+            return {
+                "image_ids": self._get_database_pair_candidates(image_id),
+                "source": "matches",
+            }
+        if self.active_source == DataSource.SFM_MODEL:
+            return self._get_reconstruction_pair_candidates(
+                image_id, max_pose_neighbors
+            )
+        return {"image_ids": [], "source": "none"}
 
-                matches = self.db.read_matches(image_id, other_image_id)
-                if matches is None:
-                    continue
+    def _get_database_pair_candidates(self, image_id: int) -> List[int]:
+        if not self.db:
+            return []
+        matched_image_ids = []
+        for other_image_id in (image["id"] for image in self.get_images()):
+            if image_id == other_image_id:
+                continue
+            if not self.db.exists_matches(image_id, other_image_id):
+                continue
+            matches = self.db.read_matches(image_id, other_image_id)
+            try:
+                has_matches = matches is not None and len(matches) > 0
+            except TypeError:
+                # Some pycolmap versions return objects without __len__.
+                has_matches = getattr(matches, "size", 0) > 0
+            if has_matches:
+                matched_image_ids.append(other_image_id)
+        return matched_image_ids
 
-                try:
-                    has_matches = len(matches) > 0
-                except TypeError:
-                    # Some pycolmap versions return objects without __len__; fall back to size
-                    has_matches = getattr(matches, "size", 0) > 0
+    def _get_reconstruction_pair_candidates(
+        self, image_id: int, max_pose_neighbors: int
+    ) -> Dict[str, Any]:
+        if not self.reconstruction:
+            return {"image_ids": [], "source": "none"}
+        track_neighbors = self._get_track_neighbors_from_recon(image_id)
+        if track_neighbors:
+            return {"image_ids": track_neighbors, "source": "tracks"}
+        limit = max(1, min(self.MAX_POSE_NEIGHBORS, int(max_pose_neighbors)))
+        return {
+            "image_ids": self._get_pose_neighbor_index().candidates(image_id, limit),
+            "source": "pose_neighbors",
+        }
 
-                if has_matches:
-                    matched_image_ids.append(other_image_id)
-            return matched_image_ids
-        elif self.reconstruction:
-            return self._get_matches_for_image_from_recon(image_id)
-        return []
+    def get_matches_for_image(
+        self, image_id: int, max_pose_neighbors: int = DEFAULT_POSE_NEIGHBORS
+    ) -> List[int]:
+        """Return observed pair IDs, or pose neighbors when observations are absent."""
+        return self.get_pair_candidates(image_id, max_pose_neighbors)["image_ids"]
 
-    def _get_matches_for_image_from_recon(self, image_id: int) -> List[int]:
+    def _get_track_neighbors_from_recon(self, image_id: int) -> List[int]:
         if not self.reconstruction or image_id not in self.reconstruction.images:
             return []
 
@@ -551,7 +601,19 @@ class ColmapService:
                 if track_element.image_id != image_id:
                     matched_image_ids.add(track_element.image_id)
 
-        return sorted(list(matched_image_ids))
+        return sorted(matched_image_ids)
+
+    def _get_pose_neighbor_index(self) -> PoseNeighborIndex:
+        if self._pose_neighbor_index is not None:
+            return self._pose_neighbor_index
+        with self._pose_neighbor_lock:
+            if self._pose_neighbor_index is None:
+                if not self.reconstruction:
+                    raise ValueError("An SfM reconstruction is required")
+                self._pose_neighbor_index = PoseNeighborIndex.from_reconstruction(
+                    self.reconstruction
+                )
+            return self._pose_neighbor_index
 
     def get_matches(self, image_id1: int, image_id2: int, match_type: Optional[str] = None) -> Optional[List]:
         """Returns the matches between two images."""
