@@ -215,6 +215,61 @@ canvas {
     border-radius: 4px;
 }
 
+.reprojection-reset-view {
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 10px;
+}
+
+.reprojection-geometry {
+    margin-bottom: 16px;
+}
+
+.reprojection-geometry > label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.geometry-drop-zone {
+    padding: 12px 8px;
+    border: 1px dashed #999;
+    border-radius: 4px;
+    background: #fafafa;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 100ms, background-color 100ms;
+}
+
+.geometry-drop-zone span {
+    display: block;
+    margin-top: 3px;
+    color: #666;
+    font-size: 0.78rem;
+}
+
+.geometry-drop-zone.drag-over {
+    border-color: #1769aa;
+    background: #e8f3ff;
+}
+
+.geometry-drop-zone.loading {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.geometry-status {
+    margin: 7px 0;
+    color: #555;
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+#reprojection-use-colmap {
+    width: 100%;
+    padding: 7px;
+}
+
 .reprojection-viewer {
     flex: 1;
     min-width: 0;
@@ -225,6 +280,8 @@ canvas {
     overflow: hidden;
     background: #111;
     padding: 5px;
+    cursor: grab;
+    touch-action: none;
 }
 
 .reprojection-split {
@@ -235,7 +292,7 @@ canvas {
     overflow: hidden;
     user-select: none;
     touch-action: none;
-    cursor: ew-resize;
+    cursor: inherit;
 }
 
 .reprojection-split > img,
@@ -249,8 +306,19 @@ canvas {
     pointer-events: none;
 }
 
+.reprojection-viewer img {
+    pointer-events: none;
+    user-select: none;
+}
+
 .reprojection-input {
-    transform-origin: center;
+    transform-origin: 0 0;
+}
+
+#reprojection-cloud,
+#reprojection-cloud-side,
+#reprojection-input-side {
+    transform-origin: 0 0;
 }
 
 .reprojection-input-layer {

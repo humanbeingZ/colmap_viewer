@@ -17,7 +17,8 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
 *   **Match Statistics:** View a summary of match statistics, including the number of total, inlier, and outlier matches, and the two-view configuration.
 *   **Multiple Data Sources:** Supports loading data from either a COLMAP project folder or a database file.
 *   **Geometry-only Reprojection:** Render every point in `points3D` through a registered camera without using feature observations or tracks.
-*   **Reprojection Comparison:** Compare the rendered point cloud and stored image pixels using a draggable split or side-by-side layout. Hold `Alt` and use the mouse wheel over the viewer to change rendered point size.
+*   **Reprojection Comparison:** Compare the rendered point cloud and stored image pixels using a draggable split or side-by-side layout. Use the mouse wheel to zoom both comparison layers together, left-drag to pan, drag near the split line to move it, or use `Ctrl` plus the mouse wheel to change rendered point size.
+*   **External PLY Geometry:** Drop a PLY point cloud or mesh into the reprojection viewer and project it with the registered COLMAP cameras.
 
 ## Installation
 
@@ -50,6 +51,13 @@ You can also use shorter aliases for the arguments:
 
 ```bash
 python main.py -i /path/to/your/images -c /path/to/your/colmap/project
+```
+
+An external PLY can also be selected at startup. It is assumed to use the same
+world coordinate system as the COLMAP reconstruction:
+
+```bash
+python main.py -i /path/to/images -c /path/to/sparse -g /path/to/geometry.ply
 ```
 
 ```bash
@@ -97,6 +105,26 @@ COLMAP database. The input image is decoded without applying EXIF orientation,
 and the orientation menu can be used to test horizontal/vertical flips and a
 180-degree rotation.
 
+Drop a `.ply` file onto the geometry drop area or directly onto the
+reprojection image. The loader reads only `x`, `y`, `z`, optional
+`red`, `green`, `blue`, and optional face vertex indices; other PLY properties
+and elements are ignored. Gaussian Splatting PLYs may provide `f_dc_0`,
+`f_dc_1`, and `f_dc_2` instead of RGB; their degree-zero spherical-harmonic
+coefficients are converted to display RGB, while opacity, scale, rotation, and
+higher-order SH properties are ignored. Point-cloud vertices are rendered directly. Mesh
+faces are sampled deterministically over their surfaces, up to five million
+rendered points. Meshes too large for bounded face expansion fall back to five
+million vertices selected from distributed blocks. Uploaded geometry is scoped
+to the browser tab that loaded it; other viewers retain their own selection.
+The server retains up to eight active uploaded geometries and rejects further
+uploads with an explicit capacity error instead of silently changing an
+existing viewer's geometry. A browser tab keeps its viewer identity across
+reloads, while duplicated tabs negotiate distinct identities. Each tab sends a
+lightweight heartbeat; geometry from a closed or abandoned viewer is released
+after ten minutes without activity.
+Use **Use COLMAP points3D** to restore the reconstruction's original sparse
+points in the current viewer.
+
 ## API Endpoints
 
 The following API endpoints are available:
@@ -106,6 +134,10 @@ The following API endpoints are available:
 *   `GET /api/sources`: Returns a list of available data sources.
 *   `GET /api/capabilities`: Reports whether 3D reprojection is available.
 *   `GET /api/reprojection/images`: Lists registered reconstruction images.
+*   `POST /api/reprojection/geometry`: Loads an uploaded PLY point cloud or mesh.
+*   `DELETE /api/reprojection/geometry`: Restores COLMAP `points3D`.
+*   `POST /api/reprojection/stream/heartbeat`: Keeps a viewer's geometry active.
+*   `DELETE /api/reprojection/stream`: Explicitly releases a viewer's geometry.
 *   `GET /api/reprojection/{image_id}/input`: Returns normalized input pixels for comparison.
 *   `GET /api/reprojection/{image_id}/render`: Returns a z-buffered geometric point rendering.
 *   `POST /api/set_source/{source_name}`: Sets the active data source.
@@ -122,4 +154,5 @@ The following API endpoints are available:
 *   [pycolmap](https://github.com/colmap/pycolmap)
 *   [numpy](httpshttps://numpy.org/)
 *   [Pillow](https://python-pillow.org/)
+*   [plyfile](https://github.com/dranjan/python-plyfile)
 *   [jinja2](https://jinja.palletsprojects.com/)

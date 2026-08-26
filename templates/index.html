@@ -81,7 +81,7 @@
                         <option value="depth">Depth</option>
                         <option value="white">White</option>
                     </select>
-                    <label for="reprojection-point-size">Point size (Alt + wheel):</label>
+                    <label for="reprojection-point-size">Point size (Ctrl + wheel):</label>
                     <div class="reprojection-point-size-control">
                         <input id="reprojection-point-size" type="number"
                                value="3" min="1" max="15" step="2">
@@ -94,6 +94,26 @@
                         <option value="vertical">Flip vertical</option>
                         <option value="both">Rotate 180&deg;</option>
                     </select>
+                    <button id="reprojection-reset-view" type="button"
+                            class="reprojection-reset-view">
+                        Reset view
+                    </button>
+                </div>
+                <div class="reprojection-geometry">
+                    <label>Projected geometry:</label>
+                    <div id="reprojection-geometry-drop" class="geometry-drop-zone"
+                         role="button" tabindex="0">
+                        <strong>Drop a PLY here</strong>
+                        <span>or click to select a point cloud or mesh</span>
+                    </div>
+                    <input id="reprojection-geometry-file" type="file"
+                           accept=".ply" hidden>
+                    <div id="reprojection-geometry-status" class="geometry-status">
+                        COLMAP points3D
+                    </div>
+                    <button id="reprojection-use-colmap" type="button">
+                        Use COLMAP points3D
+                    </button>
                 </div>
                 <div id="reprojection-status" class="reprojection-status">
                     Select 3D reprojection mode to load the model.

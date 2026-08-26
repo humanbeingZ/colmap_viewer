@@ -1,5 +1,6 @@
 import argparse
 import os
+import tempfile
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
@@ -8,10 +9,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from colmap_service import (
     ColmapService,
     DataSource,
+    GeometryCapacityError,
+    GeometryUploadSuperseded,
     InputSuperseded,
     RenderSuperseded,
 )
@@ -81,13 +85,14 @@ async def get_sources():
 
 
 @app.get("/api/capabilities")
-async def get_capabilities():
+async def get_capabilities(stream: str = "default"):
     available = colmap_service.has_reprojection_data()
     if available:
         colmap_service.start_reprojection_warmup()
     return {
         "reprojection": available,
         "dataset_namespace": colmap_service.cache_namespace,
+        "geometry": colmap_service.get_geometry_status(stream),
     }
 
 
@@ -96,9 +101,84 @@ async def get_reprojection_images():
     if not colmap_service.has_reprojection_data():
         raise HTTPException(
             status_code=409,
-            detail="3D reprojection requires a sparse model with registered images and points.",
+            detail="3D reprojection requires a sparse model with registered camera poses.",
         )
     return colmap_service.get_reprojection_images()
+
+
+@app.post("/api/reprojection/geometry")
+async def upload_reprojection_geometry(
+    request: Request,
+    filename: str,
+    stream: str = "default",
+    generation: Optional[int] = None,
+):
+    if not filename.lower().endswith(".ply"):
+        raise HTTPException(status_code=400, detail="Only .ply geometry is supported")
+    try:
+        upload_token = colmap_service.begin_external_geometry_upload(
+            stream, generation
+        )
+    except GeometryCapacityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GeometryUploadSuperseded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    upload_path = None
+    total = 0
+    max_upload_bytes = 1024 * 1024 * 1024
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".ply", delete=False) as upload:
+            upload_path = upload.name
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="PLY upload exceeds the 1 GiB limit",
+                    )
+                upload.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Uploaded PLY is empty")
+        try:
+            status = await run_in_threadpool(
+                colmap_service.load_external_geometry,
+                upload_path,
+                os.path.basename(filename),
+                stream,
+                upload_token=upload_token,
+            )
+        except GeometryCapacityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except GeometryUploadSuperseded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return status
+    finally:
+        colmap_service.cancel_external_geometry_upload(stream, upload_token)
+        if upload_path and os.path.exists(upload_path):
+            os.unlink(upload_path)
+
+
+@app.delete("/api/reprojection/geometry")
+async def reset_reprojection_geometry(stream: str = "default"):
+    try:
+        return await run_in_threadpool(
+            colmap_service.reset_external_geometry, stream
+        )
+    except GeometryCapacityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/reprojection/stream/heartbeat")
+async def heartbeat_reprojection_stream(stream: str = "default"):
+    return colmap_service.get_geometry_status(stream)
+
+
+@app.delete("/api/reprojection/stream", status_code=204)
+async def release_reprojection_stream(stream: str = "default"):
+    colmap_service.release_geometry_stream(stream)
+    return Response(status_code=204)
 
 
 @app.get("/api/reprojection/{image_id}/input")
@@ -133,8 +213,18 @@ def get_reprojection_render(
     color: str = "rgb",
     radius: int = 1,
     stream: str = "default",
+    geometry: Optional[str] = None,
 ):
     try:
+        current_geometry = colmap_service.get_geometry_status(stream)
+        if geometry and geometry != current_geometry["cache_token"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "The viewer geometry selection has changed",
+                    "geometry": current_geometry,
+                },
+            )
         png = colmap_service.get_reprojection_render_png(
             image_id, max_size, color, radius, request_stream=stream
         )
@@ -201,6 +291,10 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--image_base_path", type=str, required=True)
     parser.add_argument("-c", "--colmap_project_path", type=str, default=None)
     parser.add_argument("-d", "--database_path", type=str, default=None)
+    parser.add_argument(
+        "-g", "--geometry", type=str, default=None,
+        help="PLY point cloud or mesh to use instead of COLMAP points3D",
+    )
     parser.add_argument("-p", "--port", type=int, default=8000)
     args = parser.parse_args()
 
@@ -210,7 +304,8 @@ if __name__ == "__main__":
     colmap_service = ColmapService(
         image_path=args.image_base_path,
         project_path=args.colmap_project_path,
-        db_path=args.database_path
+        db_path=args.database_path,
+        geometry_path=args.geometry,
     )
 
     uvicorn.run(app, host="0.0.0.0", port=args.port)
