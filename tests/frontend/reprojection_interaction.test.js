@@ -1,6 +1,6 @@
 const assert = require("assert");
-const ReprojectionInteraction = require("../static/js/reprojection_interaction.js");
-const splitGeometry = require("../static/js/reprojection_split.js");
+const ReprojectionInteraction = require("../../static/js/reprojection/interaction.js");
+const splitGeometry = require("../../static/js/reprojection/split.js");
 
 const listeners = {};
 const viewer = {

@@ -1,6 +1,6 @@
 const assert = require("assert");
 const ReprojectionPointRequester = require(
-    "../static/js/reprojection_point_request.js"
+    "../../static/js/reprojection/point_request.js"
 );
 const loaders = [];
 

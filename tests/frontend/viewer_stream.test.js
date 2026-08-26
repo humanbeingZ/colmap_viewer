@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const vm = require("vm");
 
-const source = fs.readFileSync("static/js/viewer_stream.js", "utf8");
+const source = fs.readFileSync("static/js/shared/viewer_stream.js", "utf8");
 
 class MemoryStorage {
     constructor(id) {

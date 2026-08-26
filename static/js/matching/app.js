@@ -17,6 +17,7 @@ const epipolarCanvas = document.getElementById("epipolar-canvas");
 const generatedPairOptions = document.getElementById("generated-pair-options");
 const generatedPairMessage = document.getElementById("generated-pair-message");
 const poseNeighborLimit = document.getElementById("pose-neighbor-limit");
+const matchingApi = new MatchingApi();
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
@@ -147,7 +148,13 @@ async function updateMatchSummary() {
 
     setMatchSummaryMessage("Loading match statistics...");
 
-    const summary = await fetchMatchSummary(imageId1, imageId2);
+    let summary;
+    try {
+        summary = await matchingApi.matchSummary(imageId1, imageId2);
+    } catch (error) {
+        console.error("Error fetching match summary:", error);
+        summary = null;
+    }
     if (!summary) {
         setMatchSummaryMessage("Unable to load match statistics.");
         return null;
@@ -159,16 +166,8 @@ async function updateMatchSummary() {
 }
 
 const canvasStates = {
-    image1: {
-        scale: 1, translateX: 0, translateY: 0,
-        viewportWidth: 0, viewportHeight: 0, pixelRatio: 1,
-        isDragging: false, lastMouseX: 0, lastMouseY: 0,
-    },
-    image2: {
-        scale: 1, translateX: 0, translateY: 0,
-        viewportWidth: 0, viewportHeight: 0, pixelRatio: 1,
-        isDragging: false, lastMouseX: 0, lastMouseY: 0,
-    },
+    image1: MatchingCanvas.createState(),
+    image2: MatchingCanvas.createState(),
 };
 
 const epipolarTool = new EpipolarTool({
@@ -211,11 +210,7 @@ showWrongMatchesCheckbox.addEventListener("change", () => {
 
 async function initializeSources() {
     try {
-        const response = await fetch("/api/sources");
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const sources = await response.json();
+        const sources = await matchingApi.sources();
 
         if (sources.length > 1) {
             sourceSelect.innerHTML = "";
@@ -236,27 +231,10 @@ async function initializeSources() {
 
 async function fetchImages() {
     try {
-        const response = await fetch("/api/images");
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        allImages = await response.json();
+        allImages = await matchingApi.images();
         populateImageSelects();
     } catch (error) {
         console.error("Error fetching images:", error);
-    }
-}
-
-async function fetchImageData(imageId) {
-    try {
-        const response = await fetch(`/api/image_data/${imageId}`);
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error(`Error fetching image data for ID ${imageId}:`, error);
-        return null;
     }
 }
 
@@ -268,49 +246,10 @@ async function fetchMatchesForImage(imageId) {
         const requested = Number(poseNeighborLimit.value) || fallback;
         const limit = Math.max(minimum, Math.min(maximum, requested));
         poseNeighborLimit.value = limit;
-        const response = await fetch(
-            `/api/matches_for_image/${imageId}?max_neighbors=${limit}`
-        );
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return {
-            imageIds: await response.json(),
-            source: response.headers.get("X-Pair-Candidate-Source") || "matches",
-        };
+        return await matchingApi.pairCandidates(imageId, limit);
     } catch (error) {
         console.error("Error fetching matched images:", error);
         return {imageIds: [], source: "none"};
-    }
-}
-
-async function fetchMatches(imageId1, imageId2, matchType = null) {
-    try {
-        let url = `/api/matches/${imageId1}/${imageId2}`;
-        if (matchType) {
-            url += `?match_type=${matchType}`;
-        }
-        const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error("Error fetching matches:", error);
-        return null;
-    }
-}
-
-async function fetchMatchSummary(imageId1, imageId2) {
-    try {
-        const response = await fetch(`/api/match_summary/${imageId1}/${imageId2}`);
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error("Error fetching match summary:", error);
-        return null;
     }
 }
 
@@ -378,30 +317,9 @@ async function updateImage2List() {
 // --- Canvas Drawing Functions ---
 
 function resetCanvasState(canvas, imageElement, state) {
-    const panel = canvas.parentElement;
-    const width = panel.clientWidth;
-    const height = panel.clientHeight;
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-    canvas.width = Math.max(1, Math.round(width * pixelRatio));
-    canvas.height = Math.max(1, Math.round(height * pixelRatio));
-    state.viewportWidth = width;
-    state.viewportHeight = height;
-    state.pixelRatio = pixelRatio;
-
-    const imageWidth = imageElement.naturalWidth || imageElement.width;
-    const imageHeight = imageElement.naturalHeight || imageElement.height;
-    const scaleX = width / imageWidth;
-    const scaleY = height / imageHeight;
-    state.scale = Math.min(scaleX, scaleY);
-    state.translateX = (width - imageWidth * state.scale) / 2;
-    state.translateY = (height - imageHeight * state.scale) / 2;
-}
-
-function clearCanvas(canvas, ctx) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    MatchingCanvas.configure(
+        canvas, imageElement, state, window.devicePixelRatio || 1
+    );
 }
 
 async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPanel) {
@@ -409,14 +327,20 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
     const state = canvasStates[canvasKey];
 
     if (!imageId) {
-        clearCanvas(canvas, ctx);
+        MatchingCanvas.clear(canvas, ctx);
         if (isLeftPanel) { currentImage1Data = null; } else { currentImage2Data = null; }
         return;
     }
 
-    const imageData = await fetchImageData(imageId);
+    let imageData;
+    try {
+        imageData = await matchingApi.imageData(imageId);
+    } catch (error) {
+        console.error(`Error fetching image data for ID ${imageId}:`, error);
+        imageData = null;
+    }
     if (!imageData) {
-        clearCanvas(canvas, ctx);
+        MatchingCanvas.clear(canvas, ctx);
         return;
     }
 
@@ -442,16 +366,14 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     const imageElement = canvasKey === "image1" ? currentImage1 : currentImage2;
     const imageData = canvasKey === "image1" ? currentImage1Data : currentImage2Data;
 
-    clearCanvas(canvas, ctx);
+    MatchingCanvas.clear(canvas, ctx);
 
     if (!imageElement.src || !imageData) {
         return;
     }
 
     ctx.save();
-    ctx.setTransform(state.pixelRatio, 0, 0, state.pixelRatio, 0, 0);
-    ctx.translate(state.translateX, state.translateY);
-    ctx.scale(state.scale, state.scale);
+    MatchingCanvas.applyTransform(ctx, state);
     ctx.imageSmoothingEnabled = state.scale * state.pixelRatio < 1;
     ctx.drawImage(
         imageElement,
@@ -730,8 +652,18 @@ async function handleFetchMatches() {
     clearMatchSummary("Loading match statistics...");
     resetMatchState();
 
-    const inlierMatches = await fetchMatches(imageId1, imageId2, "inlier");
-    const outlierMatches = await fetchMatches(imageId1, imageId2, "outlier");
+    let inlierMatches;
+    let outlierMatches;
+    try {
+        [inlierMatches, outlierMatches] = await Promise.all([
+            matchingApi.matches(imageId1, imageId2, "inlier"),
+            matchingApi.matches(imageId1, imageId2, "outlier"),
+        ]);
+    } catch (error) {
+        console.error("Error fetching matches:", error);
+        inlierMatches = null;
+        outlierMatches = null;
+    }
 
     if (inlierMatches === null || outlierMatches === null) {
         resetMatchState();
@@ -929,22 +861,14 @@ function imageToCanvas(point, canvasKey) {
     const canvas = canvasKey === "image1" ? image1Canvas : image2Canvas;
     const panel = canvas.parentElement;
 
-    const x_in_canvas = point.x * state.scale + state.translateX;
-    const y_in_canvas = point.y * state.scale + state.translateY;
-
-    const x = x_in_canvas + panel.offsetLeft;
-    const y = y_in_canvas + panel.offsetTop;
+    const viewport = MatchingCanvas.imageToViewport(point, state);
+    const x = viewport.x + panel.offsetLeft;
+    const y = viewport.y + panel.offsetTop;
 
     return { x, y };
 }
 
 function isPointVisible(point, canvasKey) {
     const state = canvasStates[canvasKey];
-    const canvas = canvasKey === "image1" ? image1Canvas : image2Canvas;
-
-    const x_in_canvas = point.x * state.scale + state.translateX;
-    const y_in_canvas = point.y * state.scale + state.translateY;
-
-    return x_in_canvas >= 0 && x_in_canvas <= state.viewportWidth
-        && y_in_canvas >= 0 && y_in_canvas <= state.viewportHeight;
+    return MatchingCanvas.isVisible(point, state);
 }

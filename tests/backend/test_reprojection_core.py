@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from reprojection_core import (
+from viewer.reprojection.core import (
     BoundedLRUCache,
     GeometryCapacityError,
     GeometryData,

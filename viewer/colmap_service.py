@@ -8,16 +8,16 @@ from enum import Enum
 
 import numpy as np
 from PIL import Image
-from epipolar_geometry import PoseNeighborIndex, fundamental_matrix
-from ply_geometry import PlyGeometryLoader
-from reprojection_core import (
+from .geometry.epipolar import PoseNeighborIndex, fundamental_matrix
+from .geometry.ply import PlyGeometryLoader
+from .reprojection.core import (
     BoundedLRUCache,
     GeometryData,
     InputSuperseded,
     SupersessionTracker,
     ViewerGeometryStore,
 )
-from reprojection_renderer import ReprojectionRenderer
+from .reprojection.renderer import ReprojectionRenderer
 
 
 class DataSource(Enum):

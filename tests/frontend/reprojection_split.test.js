@@ -1,5 +1,5 @@
 const assert = require("assert");
-const split = require("../static/js/reprojection_split.js");
+const split = require("../../static/js/reprojection/split.js");
 
 function close(actual, expected, tolerance = 1e-7) {
     assert.ok(Math.abs(actual - expected) <= tolerance,

@@ -9,7 +9,7 @@ import numexpr as ne
 import numpy as np
 from PIL import Image
 
-from reprojection_core import (
+from .core import (
     BoundedLRUCache,
     GeometryData,
     RenderSuperseded,

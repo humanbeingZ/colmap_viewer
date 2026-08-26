@@ -1,5 +1,5 @@
 const assert = require("assert");
-const pointSize = require("../static/js/reprojection_point_size.js");
+const pointSize = require("../../static/js/reprojection/point_size.js");
 
 assert.strictEqual(pointSize.normalize(2), 3);
 assert.strictEqual(pointSize.normalize(0.6), 0.5);

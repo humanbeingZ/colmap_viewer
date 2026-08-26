@@ -1,6 +1,6 @@
 import unittest
 
-from colmap_service import ColmapService, DataSource
+from viewer.colmap_service import ColmapService, DataSource
 
 
 class FakeDatabase:

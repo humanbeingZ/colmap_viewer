@@ -1,5 +1,7 @@
 const assert = require("assert");
-const {correspondingLines, lineSegment} = require("../static/js/epipolar.js");
+const {correspondingLines, lineSegment} = require(
+    "../../static/js/matching/epipolar.js"
+);
 
 const horizontalFundamental = [
     [0, 0, 0],

@@ -48,6 +48,7 @@ const reprojectionIdentity = new ViewerStreamIdentity({
     onLateCollision: recoverFromLateIdentityCollision,
 });
 const reprojectionIdentityReady = reprojectionIdentity.ready;
+const reprojectionApi = new ReprojectionApi(() => reprojectionIdentity.id);
 let reprojectionUploadGeneration = Number(
     ViewerStreamIdentity.readSession(reprojectionUploadGenerationKey) || 0
 );
@@ -130,13 +131,7 @@ function applyGeometryStatus(geometry) {
 async function initializeReprojectionCapability() {
     await reprojectionIdentityReady;
     try {
-        const response = await fetch(
-            `/api/capabilities?stream=${encodeURIComponent(reprojectionIdentity.id)}`
-        );
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const capabilities = await response.json();
+        const capabilities = await reprojectionApi.capabilities();
         reprojectionState.datasetNamespace = capabilities.dataset_namespace;
         reprojectionState.maxRenderSize = capabilities.max_reprojection_size;
         applyGeometryStatus(capabilities.geometry);
@@ -186,12 +181,7 @@ async function ensureReprojectionImages() {
     }
     setReprojectionStatus("Loading registered images…");
     try {
-        const response = await fetch("/api/reprojection/images");
-        if (!response.ok) {
-            const body = await response.json().catch(() => ({}));
-            throw new Error(body.detail || `HTTP ${response.status}`);
-        }
-        reprojectionState.images = await response.json();
+        reprojectionState.images = await reprojectionApi.images();
         if (!reprojectionState.images.length) {
             throw new Error("The sparse model has no registered images.");
         }
@@ -406,22 +396,9 @@ async function uploadReprojectionGeometry(file) {
     reprojectionUseColmap.disabled = true;
     setReprojectionStatus(`Loading ${file.name}…`);
     try {
-        const response = await fetch(
-            `/api/reprojection/geometry?filename=${encodeURIComponent(file.name)}`
-                + `&stream=${encodeURIComponent(reprojectionIdentity.id)}`
-                + `&generation=${reprojectionUploadGeneration}`,
-            {
-                method: "POST",
-                headers: {"Content-Type": "application/octet-stream"},
-                body: file,
-                signal: uploadController.signal,
-            }
+        const geometry = await reprojectionApi.uploadGeometry(
+            file, reprojectionUploadGeneration, uploadController.signal
         );
-        if (!response.ok) {
-            const body = await response.json().catch(() => ({}));
-            throw new Error(body.detail || `HTTP ${response.status}`);
-        }
-        const geometry = await response.json();
         if (reprojectionUploadController !== uploadController) {
             return;
         }
@@ -454,15 +431,7 @@ async function resetReprojectionGeometry() {
     reprojectionUseColmap.disabled = true;
     setReprojectionStatus("Restoring COLMAP points3D…");
     try {
-        const response = await fetch(
-            `/api/reprojection/geometry?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
-            {method: "DELETE"}
-        );
-        if (!response.ok) {
-            const body = await response.json().catch(() => ({}));
-            throw new Error(body.detail || `HTTP ${response.status}`);
-        }
-        applyGeometryStatus(await response.json());
+        applyGeometryStatus(await reprojectionApi.resetGeometry());
         if (reprojectionState.loaded) {
             loadReprojectionFrame(reprojectionState.currentIndex);
         }
@@ -475,15 +444,7 @@ async function resetReprojectionGeometry() {
 async function heartbeatReprojectionStream() {
     await reprojectionIdentityReady;
     try {
-        const response = await fetch(
-            "/api/reprojection/stream/heartbeat"
-                + `?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
-            {method: "POST"}
-        );
-        if (!response.ok) {
-            return false;
-        }
-        const geometry = await response.json();
+        const geometry = await reprojectionApi.heartbeat();
         const changed = geometry.cache_token
             !== reprojectionState.geometryCacheToken;
         if (changed) {
@@ -539,11 +500,7 @@ function cancelReprojectionRender() {
     const cancellation = (async () => {
         await reprojectionIdentityReady;
         try {
-            await fetch(
-                "/api/reprojection/cancel-render"
-                    + `?stream=${encodeURIComponent(reprojectionIdentity.id)}`,
-                {method: "POST"}
-            );
+            await reprojectionApi.cancelRender();
         } catch (_) {
             // Navigation still works if cancellation races with server shutdown.
         }

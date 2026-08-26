@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from ply_geometry import PlyGeometryLoader
+from viewer.geometry.ply import PlyGeometryLoader
 
 
 def write_ordered_binary_ply(path: str, list_metadata: bool):

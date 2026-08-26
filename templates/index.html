@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COLMAP Viewer</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/matching.css">
+    <link rel="stylesheet" href="/static/css/reprojection.css">
 </head>
 <body>
     <div class="container">
@@ -204,13 +206,16 @@
         </div>
     </div>
 
-    <script src="/static/js/epipolar.js"></script>
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/viewer_stream.js"></script>
-    <script src="/static/js/reprojection_split.js"></script>
-    <script src="/static/js/reprojection_point_size.js"></script>
-    <script src="/static/js/reprojection_interaction.js"></script>
-    <script src="/static/js/reprojection_point_request.js"></script>
-    <script src="/static/js/reprojection.js"></script>
+    <script src="/static/js/matching/api.js"></script>
+    <script src="/static/js/matching/canvas.js"></script>
+    <script src="/static/js/matching/epipolar.js"></script>
+    <script src="/static/js/matching/app.js"></script>
+    <script src="/static/js/shared/viewer_stream.js"></script>
+    <script src="/static/js/reprojection/api.js"></script>
+    <script src="/static/js/reprojection/split.js"></script>
+    <script src="/static/js/reprojection/point_size.js"></script>
+    <script src="/static/js/reprojection/interaction.js"></script>
+    <script src="/static/js/reprojection/point_request.js"></script>
+    <script src="/static/js/reprojection/app.js"></script>
 </body>
 </html>

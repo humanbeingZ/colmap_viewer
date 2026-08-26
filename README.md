@@ -71,14 +71,19 @@ Then, open your web browser and navigate to `http://localhost:8000`.
 Run the backend and dependency-free browser regression suites:
 
 ```bash
-python -m unittest discover -s tests
-node tests/viewer_stream_test.js
-node tests/reprojection_request_test.js
-node tests/reprojection_split_test.js
-node tests/reprojection_point_size_test.js
-node tests/reprojection_interaction_test.js
-node tests/epipolar_test.js
+python -m unittest discover -s tests/backend -p 'test_*.py'
+for test_file in tests/frontend/*.test.js; do node "$test_file"; done
 ```
+
+## Project layout
+
+- `main.py` is the command-line launcher.
+- `viewer/` contains the FastAPI application and Python implementation.
+- `viewer/geometry/` contains PLY and epipolar geometry utilities.
+- `viewer/reprojection/` contains render state and numerical rendering code.
+- `static/js/matching/` and `static/js/reprojection/` contain the two viewer modes.
+- `static/js/shared/` contains browser state shared between viewer modes.
+- `tests/backend/` and `tests/frontend/` mirror the implementation boundaries.
 
 ## UI Overview
 

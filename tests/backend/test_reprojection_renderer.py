@@ -4,8 +4,8 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from reprojection_core import GeometryData, RenderSuperseded
-from reprojection_renderer import ReprojectionRenderer
+from viewer.reprojection.core import GeometryData, RenderSuperseded
+from viewer.reprojection.renderer import ReprojectionRenderer
 
 
 class FakePose:

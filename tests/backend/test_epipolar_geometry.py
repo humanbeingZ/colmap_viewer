@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from epipolar_geometry import (
+from viewer.geometry.epipolar import (
     PoseNeighborIndex,
     calibration_matrix,
     fundamental_matrix,
