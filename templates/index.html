@@ -127,6 +127,47 @@
                                 </div>
                             </div>
                             <div class="reprojection-field">
+                                <label for="reprojection-mesh-shading">Mesh shading</label>
+                                <select id="reprojection-mesh-shading">
+                                    <option value="face">Face normals</option>
+                                    <option value="none">None</option>
+                                </select>
+                            </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-mesh-color">Mesh color</label>
+                                <select id="reprojection-mesh-color">
+                                    <option value="vertex">Vertex colors</option>
+                                    <option value="solid">Solid gray</option>
+                                </select>
+                            </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-mesh-brightness-value">Mesh brightness</label>
+                                <div class="reprojection-brightness-control">
+                                    <input id="reprojection-mesh-brightness-value"
+                                           type="number" value="1" min="0.25"
+                                           max="3" step="0.05">
+                                    <span>&times;</span>
+                                    <input id="reprojection-mesh-brightness" type="range"
+                                           value="1" min="0.25" max="3" step="0.05"
+                                           aria-label="Mesh brightness slider">
+                                </div>
+                            </div>
+                            <div class="reprojection-field reprojection-field-wide">
+                                <span class="reprojection-field-label">Background</span>
+                                <div class="reprojection-background-control">
+                                    <label>
+                                        <span>Top</span>
+                                        <input id="reprojection-background-top" type="color"
+                                               value="#ffffff" disabled>
+                                    </label>
+                                    <label>
+                                        <span>Bottom</span>
+                                        <input id="reprojection-background-bottom" type="color"
+                                               value="#747474" disabled>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="reprojection-field">
                                 <label for="reprojection-split-angle">Divider angle</label>
                                 <div class="reprojection-angle-control">
                                     <input id="reprojection-split-angle" type="number"
@@ -189,6 +230,9 @@
 
         <div class="reprojection-viewer" id="reprojection-viewer" hidden>
             <div id="reprojection-split" class="reprojection-split">
+                <canvas id="reprojection-gpu-fallback"
+                        class="reprojection-gpu reprojection-gpu-fallback"></canvas>
+                <canvas id="reprojection-gpu" class="reprojection-gpu"></canvas>
                 <img id="reprojection-cloud" alt="Geometrically projected 3D points">
                 <div id="reprojection-input-layer" class="reprojection-input-layer">
                     <img id="reprojection-input" class="reprojection-input" alt="Input image">
@@ -216,6 +260,7 @@
     <script src="/static/js/reprojection/point_size.js"></script>
     <script src="/static/js/reprojection/interaction.js"></script>
     <script src="/static/js/reprojection/point_request.js"></script>
+    <script src="/static/vendor/reprojection_gpu.js"></script>
     <script src="/static/js/reprojection/app.js"></script>
 </body>
 </html>

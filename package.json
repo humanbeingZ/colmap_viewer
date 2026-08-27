@@ -1,0 +1,12 @@
+{
+  "name": "colmap-viewer-frontend",
+  "private": true,
+  "scripts": {
+    "build": "esbuild static/js/reprojection/gpu_renderer.js --bundle --format=iife --global-name=ReprojectionGpu --outfile=static/vendor/reprojection_gpu.js --target=es2022",
+    "test": "for test_file in tests/frontend/*.test.js tests/frontend/*.test.mjs; do node \"$test_file\"; done"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "three": "github:mrdoob/three.js#dev"
+  }
+}

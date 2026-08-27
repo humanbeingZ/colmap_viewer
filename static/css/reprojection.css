@@ -36,12 +36,17 @@
     margin-bottom: 9px;
 }
 
-.reprojection-field label {
+.reprojection-field > label,
+.reprojection-field-label {
     display: block;
     margin-bottom: 4px;
     color: #555;
     font-size: 0.8rem;
     font-weight: 600;
+}
+
+.reprojection-field-wide {
+    grid-column: 1 / -1;
 }
 
 .reprojection-field select,
@@ -56,12 +61,80 @@
     background: white;
 }
 
+.reprojection-background-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+}
+
+.reprojection-background-control label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: #666;
+    font-size: 0.78rem;
+}
+
+.reprojection-background-control input[type="color"] {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 2px;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+}
+
+.reprojection-background-control input[type="color"]:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
 .reprojection-point-size-control,
 .reprojection-angle-control {
     display: flex;
     align-items: center;
     gap: 7px;
     margin-bottom: 0;
+}
+
+.reprojection-brightness-control {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    height: 34px;
+    padding: 3px 6px;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    background: white;
+}
+
+.reprojection-brightness-control input[type="number"] {
+    width: 48px;
+    min-width: 0;
+    padding: 3px 2px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font: inherit;
+}
+
+.reprojection-brightness-control span {
+    color: #666;
+    font-size: 0.8rem;
+}
+
+.reprojection-brightness-control input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    margin: 0;
 }
 
 .reprojection-point-size-control input,
@@ -200,7 +273,7 @@
     position: relative;
     max-width: 100%;
     max-height: 100%;
-    background: #000;
+    background: linear-gradient(to bottom, #fff, #747474);
     overflow: hidden;
     user-select: none;
     touch-action: none;
@@ -208,6 +281,7 @@
 }
 
 .reprojection-split > img,
+.reprojection-split > canvas,
 .reprojection-input-layer,
 .reprojection-input-layer img {
     position: absolute;
@@ -218,9 +292,24 @@
     pointer-events: none;
 }
 
+.reprojection-gpu {
+    display: none;
+    background: #000;
+    transform-origin: 0 0;
+}
+
+.reprojection-gpu.active {
+    display: block;
+}
+
 .reprojection-viewer img {
     pointer-events: none;
     user-select: none;
+}
+
+.reprojection-viewer.zoomed-in img,
+.reprojection-viewer.zoomed-in canvas {
+    image-rendering: pixelated;
 }
 
 .reprojection-input {
@@ -267,11 +356,22 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    background: #000;
+    background: linear-gradient(to bottom, #fff, #747474);
 }
 
 .reprojection-pane img {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
+}
+
+.reprojection-pane .reprojection-gpu {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+}
+
+.reprojection-pane .reprojection-gpu-fallback {
+    position: absolute;
 }

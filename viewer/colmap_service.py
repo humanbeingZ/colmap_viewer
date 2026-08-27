@@ -2,6 +2,8 @@ import pycolmap
 import os
 import io
 import hashlib
+import hmac
+import secrets
 import threading
 from typing import List, Dict, Any, Optional
 from enum import Enum
@@ -9,6 +11,7 @@ from enum import Enum
 import numpy as np
 from PIL import Image
 from .geometry.epipolar import PoseNeighborIndex, fundamental_matrix
+from .geometry.mesh_stream import StreamablePlyMesh
 from .geometry.ply import PlyGeometryLoader
 from .reprojection.core import (
     BoundedLRUCache,
@@ -46,6 +49,7 @@ class ColmapService:
     MAX_COLMAP_STREAM_SELECTIONS = 1024
     STREAM_IDLE_TIMEOUT_SECONDS = 10 * 60
     MAX_REPROJECTION_SIZE = ReprojectionRenderer.MAX_PREVIEW_SIZE
+    MAX_INPUT_SIZE = 8192
     DEFAULT_POSE_NEIGHBORS = 32
     MAX_POSE_NEIGHBORS = 256
 
@@ -60,6 +64,10 @@ class ColmapService:
         self.project_path = project_path
         self.db_path = db_path
         self.geometry_path = geometry_path
+        self._geometry_file_token = secrets.token_urlsafe(32)
+        self._configured_mesh_stream: Optional[StreamablePlyMesh] = None
+        self._configured_mesh_stream_inspected = False
+        self._configured_mesh_stream_lock = threading.Lock()
         namespace_source = "\0".join(
             os.path.abspath(path) if path else ""
             for path in (image_path, project_path, db_path)
@@ -100,6 +108,45 @@ class ColmapService:
             normalize_stream=self._request_stream,
             png_cache=self._png_cache,
         )
+
+    def get_configured_geometry_file(self) -> Optional[Dict[str, Any]]:
+        """Describe the explicit CLI geometry without exposing its path."""
+        if not self.geometry_path or not os.path.isfile(self.geometry_path):
+            return None
+        descriptor = {
+            "name": os.path.basename(self.geometry_path),
+            "size": os.path.getsize(self.geometry_path),
+            "token": self._geometry_file_token,
+        }
+        mesh_stream = self.get_configured_mesh_stream()
+        if mesh_stream and mesh_stream.face_count > mesh_stream.chunk_face_count:
+            descriptor["mesh_stream"] = mesh_stream.manifest()
+        return descriptor
+
+    def resolve_configured_geometry_file(self, token: str) -> Optional[str]:
+        """Resolve the configured CLI file for its unguessable capability token."""
+        if not self.geometry_path or not hmac.compare_digest(
+            token, self._geometry_file_token
+        ):
+            return None
+        if not os.path.isfile(self.geometry_path):
+            return None
+        return self.geometry_path
+
+    def get_configured_mesh_stream(
+        self, token: Optional[str] = None
+    ) -> Optional[StreamablePlyMesh]:
+        if token is not None and self.resolve_configured_geometry_file(token) is None:
+            return None
+        if not self.geometry_path or not os.path.isfile(self.geometry_path):
+            return None
+        with self._configured_mesh_stream_lock:
+            if not self._configured_mesh_stream_inspected:
+                self._configured_mesh_stream = StreamablePlyMesh.inspect(
+                    self.geometry_path
+                )
+                self._configured_mesh_stream_inspected = True
+            return self._configured_mesh_stream
 
     def load(self):
         """Loads the available COLMAP data sources."""
@@ -262,11 +309,20 @@ class ColmapService:
         result = []
         for image_id, image in self.reconstruction.images.items():
             camera = self.reconstruction.cameras[image.camera_id]
+            pose_accessor = image.cam_from_world
+            pose = pose_accessor() if callable(pose_accessor) else pose_accessor
             result.append({
                 "id": int(image_id),
                 "name": image.name,
                 "width": int(camera.width),
                 "height": int(camera.height),
+                "camera": {
+                    "model": camera.model_name,
+                    "params": np.asarray(camera.params, dtype=np.float64).tolist(),
+                },
+                "cam_from_world": np.asarray(
+                    pose.matrix(), dtype=np.float64
+                ).tolist(),
             })
         return sorted(result, key=lambda item: item["name"])
 
@@ -290,10 +346,14 @@ class ColmapService:
         return image_path
 
     @staticmethod
-    def _encode_jpeg(array: np.ndarray) -> bytes:
+    def _encode_jpeg(array: np.ndarray, high_quality: bool = False) -> bytes:
         output = io.BytesIO()
         Image.fromarray(array, "RGB").save(
-            output, format="JPEG", quality=90, subsampling=2, optimize=False
+            output,
+            format="JPEG",
+            quality=95 if high_quality else 90,
+            subsampling=0 if high_quality else 2,
+            optimize=False,
         )
         return output.getvalue()
 
@@ -330,7 +390,15 @@ class ColmapService:
 
         request_id = self._new_input_request(request_stream)
         image, camera = self._get_reprojection_image(image_id)
-        width, height, _ = self._renderer.preview_geometry(camera, max_size)
+        if not (ReprojectionRenderer.MIN_PREVIEW_SIZE
+                <= max_size <= self.MAX_INPUT_SIZE):
+            raise ValueError(
+                "input max_size must be between "
+                f"{ReprojectionRenderer.MIN_PREVIEW_SIZE} and {self.MAX_INPUT_SIZE}"
+            )
+        scale = min(1.0, max_size / max(camera.width, camera.height))
+        width = max(1, round(camera.width * scale))
+        height = max(1, round(camera.height * scale))
         with self._input_lock:
             cached = self._cache_get(cache_key)
             if cached is not None:
@@ -353,7 +421,10 @@ class ColmapService:
                     source = source.resize((width, height), Image.Resampling.BILINEAR)
                 pixels = np.asarray(source.convert("RGB"))
             self._check_input_request(request_stream, request_id)
-            return self._cache_put(cache_key, self._encode_jpeg(pixels))
+            return self._cache_put(
+                cache_key,
+                self._encode_jpeg(pixels, high_quality=max_size > 1600),
+            )
 
     def _ensure_geometry_arrays(self) -> GeometryData:
         if self._colmap_geometry is not None:

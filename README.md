@@ -18,7 +18,7 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
 *   **Multiple Data Sources:** Supports loading data from either a COLMAP project folder or a database file.
 *   **Geometry-only Reprojection:** Render every point in `points3D` through a registered camera without using feature observations or tracks.
 *   **Reprojection Comparison:** Compare the rendered point cloud and stored image pixels using a draggable split or side-by-side layout. Use the mouse wheel to zoom both comparison layers together, left-drag to pan, drag near the split line to move it, or use `Ctrl` plus the mouse wheel to change rendered point size.
-*   **External PLY Geometry:** Drop a PLY point cloud or mesh into the reprojection viewer and project it with the registered COLMAP cameras.
+*   **External PLY Geometry:** Drop a PLY point cloud, triangle mesh, or Gaussian Splatting PLY into the reprojection viewer. Pinhole cameras use direct, depth-tested Three.js rendering; distorted cameras retain the calibrated numerical fallback.
 
 ## Installation
 
@@ -32,6 +32,10 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
     ```bash
     pip install -r requirements.txt
     ```
+
+The prebuilt browser renderer is checked into `static/vendor`, so Node.js is
+not required to run the viewer. To rebuild it while developing, run
+`npm install` followed by `npm run build`.
 
 ## Usage
 
@@ -72,7 +76,7 @@ Run the backend and dependency-free browser regression suites:
 
 ```bash
 python -m unittest discover -s tests/backend -p 'test_*.py'
-for test_file in tests/frontend/*.test.js; do node "$test_file"; done
+npm test
 ```
 
 ## Project layout
@@ -100,7 +104,7 @@ The user interface consists of a control panel on the left and a viewer on the r
         *   **Match Type:** Filter matches by inlier or outlier.
     *   **Action Buttons:**
         *   **Draw Matches:** Toggle the visibility of match lines.
-        *   **Draw Epipolar Lines:** (Not yet implemented)
+        *   **Draw Epipolar Lines:** Move a corresponding epipolar line across both images to inspect pose precision.
         *   **Reset View:** Reset the zoom and pan of the images.
     *   **Match Summary:** Displays statistics about the matches between the two selected images.
 
@@ -126,15 +130,35 @@ and the orientation menu can be used to test horizontal/vertical flips and a
 180-degree rotation.
 
 Drop a `.ply` file onto the geometry drop area or directly onto the
-reprojection image. The loader reads only `x`, `y`, `z`, optional
-`red`, `green`, `blue`, and optional face vertex indices; other PLY properties
-and elements are ignored. Gaussian Splatting PLYs may provide `f_dc_0`,
-`f_dc_1`, and `f_dc_2` instead of RGB; their degree-zero spherical-harmonic
-coefficients are converted to display RGB, while opacity, scale, rotation, and
-higher-order SH properties are ignored. Point-cloud vertices are rendered directly. Mesh
-faces are sampled deterministically over their surfaces, up to five million
-rendered points. Meshes too large for bounded face expansion fall back to five
-million vertices selected from distributed blocks. Uploaded geometry is scoped
+reprojection image. With `PINHOLE` and `SIMPLE_PINHOLE` cameras, the browser
+reads the selected file directly: triangle meshes are rasterized as triangles,
+Gaussian PLYs use their opacity, scale, rotation, and available spherical
+harmonics, and ordinary PLYs are rendered as points. This path does not copy the
+file to the server and therefore has no fixed 1 GiB upload limit. The practical
+limit is available browser/GPU memory; parsing temporarily holds the source
+buffer and decoded geometry at the same time.
+
+COLMAP distortion cannot be represented by a standard Three.js perspective
+camera. For distorted camera models, the viewer therefore uses its calibrated
+server renderer rather than displaying an inaccurate overlay. That fallback
+reads `x`, `y`, `z`, RGB or degree-zero `f_dc` color, and optional faces;
+Gaussian scale/rotation/opacity are not used, and mesh faces are sampled into
+at most five million rendered points. Because fallback files cross the HTTP
+request boundary, its existing 1 GiB upload limit still applies.
+
+Geometry provided with `--geometry` is the initial viewer selection and uses
+the same automatic point-cloud, triangle-mesh, or Gaussian rendering path as a
+dropped file. Browser access to that configured local file is restricted to
+loopback clients; remote browser connections retain the numerical fallback.
+Very large binary little-endian triangle meshes are memory-mapped by the
+server and streamed as compact, locally indexed chunks. The browser represents
+those chunks as multiple Three.js geometries, preserving every triangle while
+avoiding a multi-gigabyte source `ArrayBuffer` and oversized individual GPU
+buffers. This path currently requires fixed-width vertices followed by
+triangle faces with 32-bit indices, which is the common binary PLY layout
+written by MeshLab and trimesh.
+
+Server-rendered uploaded geometry is scoped
 to the browser tab that loaded it; other viewers retain their own selection.
 The server retains up to eight active uploaded geometries and rejects further
 uploads with an explicit capacity error instead of silently changing an
@@ -154,6 +178,7 @@ The following API endpoints are available:
 *   `GET /api/sources`: Returns a list of available data sources.
 *   `GET /api/capabilities`: Reports whether 3D reprojection is available.
 *   `GET /api/reprojection/images`: Lists registered reconstruction images.
+*   `GET /api/reprojection/configured-geometry`: Streams the explicit `-g` file to an authorized loopback viewer.
 *   `POST /api/reprojection/geometry`: Loads an uploaded PLY point cloud or mesh.
 *   `DELETE /api/reprojection/geometry`: Restores COLMAP `points3D`.
 *   `POST /api/reprojection/stream/heartbeat`: Keeps a viewer's geometry active.
@@ -176,3 +201,4 @@ The following API endpoints are available:
 *   [Pillow](https://python-pillow.org/)
 *   [plyfile](https://github.com/dranjan/python-plyfile)
 *   [jinja2](https://jinja.palletsprojects.com/)
+*   [Three.js](https://threejs.org/) (prebuilt browser bundle)

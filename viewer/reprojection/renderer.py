@@ -22,6 +22,7 @@ class ReprojectionRenderer:
 
     MIN_PREVIEW_SIZE = 320
     MAX_PREVIEW_SIZE = 4096
+    BACKGROUND_VERSION = "meshlab-gradient-v1"
 
     def __init__(
         self,
@@ -99,6 +100,15 @@ class ReprojectionRenderer:
         blend = (position - left)[:, None]
         return np.uint8(anchors[left] * (1 - blend) + anchors[right] * blend)
 
+    @staticmethod
+    def _background(width: int, height: int) -> np.ndarray:
+        """Return MeshLab's top-white to bottom-gray viewport gradient."""
+        top = np.asarray([255, 255, 255], dtype=np.float32)
+        bottom = np.asarray([116, 116, 116], dtype=np.float32)
+        blend = np.linspace(0, 1, height, dtype=np.float32)[:, None]
+        rows = np.rint(top + (bottom - top) * blend).astype(np.uint8)
+        return np.broadcast_to(rows[:, None, :], (height, width, 3)).copy()
+
     def _get_reprojection_base(
         self,
         image_id: int,
@@ -113,9 +123,13 @@ class ReprojectionRenderer:
         """Return a one-pixel PNG or its cached depth-aware splat buffers."""
         geometry_token = geometry.cache_token
         cache_key = (
-            "render-base", geometry_token, image_id, max_size, color_mode
+            "render-base", self.BACKGROUND_VERSION,
+            geometry_token, image_id, max_size, color_mode
         )
-        splat_key = (geometry_token, image_id, max_size, color_mode)
+        splat_key = (
+            self.BACKGROUND_VERSION,
+            geometry_token, image_id, max_size, color_mode,
+        )
         cached = self._cache_get(cache_key)
         splat_cached = self._splat_cache_get(splat_key)
         if need_splat_data:
@@ -187,7 +201,7 @@ class ReprojectionRenderer:
             xyz_camera = xyz_camera[visible]
             colors = rgb[visible]
 
-            canvas = np.zeros((height, width, 3), dtype=np.uint8)
+            canvas = self._background(width, height)
             zbuffer = np.full(height * width, np.inf, dtype=np.float32)
             if len(xyz_camera):
                 if is_pinhole:
@@ -299,7 +313,7 @@ class ReprojectionRenderer:
 
         geometry_token = geometry.cache_token
         cache_key = (
-            "render-sized", geometry_token,
+            "render-sized", self.BACKGROUND_VERSION, geometry_token,
             image_id, max_size, color_mode, radius,
         )
         if radius > 0:
@@ -335,6 +349,6 @@ class ReprojectionRenderer:
         ).reshape(-1)
         valid = winners < sentinel
         winner_pixels = winners[valid].astype(np.int64) % source_modulus
-        canvas = np.zeros_like(base_color)
+        canvas = self._background(base_color.shape[1], base_color.shape[0])
         canvas.reshape(-1, 3)[valid] = base_color.reshape(-1, 3)[winner_pixels]
         return self._cache_put(cache_key, self._encode_png(canvas))

@@ -67,6 +67,11 @@ class ReprojectionRendererTest(unittest.TestCase):
         ))
         np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
 
+    def test_background_matches_meshlab_gradient(self):
+        pixels = decode(self.render([[0, 0, -1]], [[1, 2, 3]], radius=0))
+        np.testing.assert_array_equal(pixels[0, 20], [255, 255, 255])
+        np.testing.assert_array_equal(pixels[-1, 20], [116, 116, 116])
+
     def test_one_pixel_render_skips_large_splat_buffers(self):
         self.render([[0, 0, 1]], [[12, 34, 56]], radius=0)
         self.assertIsNone(self.renderer._splat_cache.get(("test", 1, 320, "rgb")))

@@ -12,11 +12,33 @@ const reprojectionInput = document.getElementById("reprojection-input");
 const reprojectionInputSide = document.getElementById("reprojection-input-side");
 const reprojectionCloud = document.getElementById("reprojection-cloud");
 const reprojectionCloudSide = document.getElementById("reprojection-cloud-side");
+const reprojectionGpuFallback = document.getElementById(
+    "reprojection-gpu-fallback"
+);
+const reprojectionGpuCanvas = document.getElementById("reprojection-gpu");
 const reprojectionDivider = document.getElementById("reprojection-divider");
 const reprojectionLayout = document.getElementById("reprojection-layout");
 const reprojectionSplitAngle = document.getElementById("reprojection-split-angle");
 const reprojectionColor = document.getElementById("reprojection-color");
 const reprojectionPointSize = document.getElementById("reprojection-point-size");
+const reprojectionMeshShading = document.getElementById(
+    "reprojection-mesh-shading"
+);
+const reprojectionMeshColor = document.getElementById(
+    "reprojection-mesh-color"
+);
+const reprojectionMeshBrightness = document.getElementById(
+    "reprojection-mesh-brightness"
+);
+const reprojectionMeshBrightnessValue = document.getElementById(
+    "reprojection-mesh-brightness-value"
+);
+const reprojectionBackgroundTop = document.getElementById(
+    "reprojection-background-top"
+);
+const reprojectionBackgroundBottom = document.getElementById(
+    "reprojection-background-bottom"
+);
 const reprojectionFlip = document.getElementById("reprojection-flip");
 const reprojectionResetView = document.getElementById("reprojection-reset-view");
 const reprojectionResetDivider = document.getElementById("reprojection-reset-divider");
@@ -74,8 +96,16 @@ const reprojectionState = {
     viewTranslateY: 0,
     maxSize: 1600,
     maxRenderSize: null,
+    maxInputSize: 8192,
     navigationPointTimer: null,
     pointSizeRenderTimer: null,
+    zoomDetailTimer: null,
+    meshBrightnessTimer: null,
+    backgroundRenderTimer: null,
+    backgroundColors: {
+        surface: {top: "#ffffff", bottom: "#747474"},
+        gaussian: {top: "#000000", bottom: "#000000"},
+    },
     prefetchInFlight: new Map(),
     navigationHoldKey: null,
     navigationHoldDelay: null,
@@ -85,7 +115,27 @@ const reprojectionState = {
     navigationPreviewSize: 768,
     currentInputUrl: null,
     currentRenderUrl: null,
+    renderMode: "server",
+    configuredGeometry: null,
+    browserGeometryLoading: false,
+    gpuRenderedView: {scale: 1, translateX: 0, translateY: 0},
+    gpuFallbackReady: false,
+    gpuFrameRequest: 0,
 };
+
+let reprojectionGpuRenderer = null;
+
+function getReprojectionGpuRenderer() {
+    if (!reprojectionGpuRenderer) {
+        if (!globalThis.ReprojectionGpu?.ReprojectionGpuRenderer) {
+            throw new Error("The browser GPU renderer did not load");
+        }
+        reprojectionGpuRenderer = new ReprojectionGpu.ReprojectionGpuRenderer(
+            reprojectionGpuCanvas
+        );
+    }
+    return reprojectionGpuRenderer;
+}
 
 const reprojectionInteraction = new ReprojectionInteraction({
     viewer: reprojectionViewer,
@@ -96,7 +146,7 @@ const reprojectionInteraction = new ReprojectionInteraction({
     angleControl: reprojectionSplitAngle,
     state: reprojectionState,
     splitGeometry: ReprojectionSplitGeometry,
-    applyViewTransform: applyReprojectionViewTransform,
+    applyViewTransform: applyInteractiveReprojectionViewTransform,
 });
 
 const reprojectionPointRequester = new ReprojectionPointRequester({
@@ -121,11 +171,33 @@ function applyGeometryStatus(geometry) {
     reprojectionState.geometryCacheToken = geometry.cache_token;
     reprojectionState.geometryKind = geometry.kind;
     const count = Number(geometry.point_count || 0).toLocaleString();
+    const countLabel = geometry.gpu ? "vertices" : "rendered points";
     reprojectionGeometryStatus.textContent =
-        `${geometry.name} — ${geometry.kind}, ${count} rendered points`;
+        `${geometry.name} — ${geometry.kind}, ${count} ${countLabel}`;
     reprojectionGeometrySummary.textContent = geometry.name;
     reprojectionGeometrySummary.title = geometry.name;
     reprojectionUseColmap.disabled = geometry.kind === "colmap";
+    const meshControlsDisabled = geometry.kind !== "triangle mesh";
+    reprojectionMeshShading.disabled = meshControlsDisabled;
+    reprojectionMeshColor.disabled = meshControlsDisabled;
+    reprojectionMeshBrightness.disabled = meshControlsDisabled;
+    reprojectionMeshBrightnessValue.disabled = meshControlsDisabled;
+    syncReprojectionBackgroundControls(geometry.kind, Boolean(geometry.gpu));
+}
+
+function backgroundCategory(kind = reprojectionState.geometryKind) {
+    return kind === "gaussian splats" ? "gaussian" : "surface";
+}
+
+function syncReprojectionBackgroundControls(kind, gpuEnabled) {
+    const colors = reprojectionState.backgroundColors[backgroundCategory(kind)];
+    reprojectionBackgroundTop.value = colors.top;
+    reprojectionBackgroundBottom.value = colors.bottom;
+    reprojectionBackgroundTop.disabled = !gpuEnabled;
+    reprojectionBackgroundBottom.disabled = !gpuEnabled;
+    if (gpuEnabled) {
+        getReprojectionGpuRenderer().setBackgroundColors(colors.top, colors.bottom);
+    }
 }
 
 async function initializeReprojectionCapability() {
@@ -134,6 +206,8 @@ async function initializeReprojectionCapability() {
         const capabilities = await reprojectionApi.capabilities();
         reprojectionState.datasetNamespace = capabilities.dataset_namespace;
         reprojectionState.maxRenderSize = capabilities.max_reprojection_size;
+        reprojectionState.maxInputSize = capabilities.max_input_size || 4096;
+        reprojectionState.configuredGeometry = capabilities.configured_geometry;
         applyGeometryStatus(capabilities.geometry);
         if (!capabilities.reprojection) {
             const option = viewerModeSelect.querySelector('option[value="reprojection"]');
@@ -199,14 +273,26 @@ async function ensureReprojectionImages() {
         const matchingIndex = reprojectionState.images.findIndex(
             image => String(image.id) === String(matchImageId)
         );
-        loadReprojectionFrame(matchingIndex >= 0 ? matchingIndex : 0);
+        reprojectionState.currentIndex = matchingIndex >= 0 ? matchingIndex : 0;
+        reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
+        loadReprojectionFrame(reprojectionState.currentIndex);
+        if (reprojectionState.configuredGeometry) {
+            loadConfiguredReprojectionGeometry(
+                reprojectionState.configuredGeometry
+            ).then(loaded => {
+                if (!loaded && reprojectionState.renderMode === "server") {
+                    requestReprojectionPointLayer(reprojectionState.generation);
+                }
+            });
+            return;
+        }
     } catch (error) {
         setReprojectionStatus(error.message, true);
     }
 }
 
-function previewSize(image) {
-    const scale = Math.min(1, reprojectionState.maxSize / Math.max(image.width, image.height));
+function previewSize(image, maxSize = reprojectionState.maxSize) {
+    const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
     return {
         width: Math.max(1, Math.round(image.width * scale)),
         height: Math.max(1, Math.round(image.height * scale)),
@@ -247,14 +333,131 @@ function setImageTransform(element, flipInput = false) {
         + `${scale * signs.y}, ${offsetX}, ${offsetY})`;
 }
 
+function attachReprojectionGpuCanvas() {
+    if (reprojectionState.renderMode !== "gpu") {
+        return;
+    }
+    if (reprojectionLayout.value === "side") {
+        const pane = reprojectionSide.querySelector(".reprojection-pane");
+        if (reprojectionGpuFallback.parentElement !== pane) {
+            pane.insertBefore(reprojectionGpuFallback, reprojectionCloudSide);
+        }
+        if (reprojectionGpuCanvas.parentElement !== pane) {
+            pane.insertBefore(reprojectionGpuCanvas, reprojectionCloudSide);
+        }
+    } else {
+        reprojectionGpuFallback.style.left = "";
+        reprojectionGpuFallback.style.top = "";
+        reprojectionGpuFallback.style.width = "";
+        reprojectionGpuFallback.style.height = "";
+        if (reprojectionGpuFallback.parentElement !== reprojectionSplit) {
+            reprojectionSplit.insertBefore(reprojectionGpuFallback, reprojectionCloud);
+        }
+        if (reprojectionGpuCanvas.parentElement !== reprojectionSplit) {
+            reprojectionSplit.insertBefore(reprojectionGpuCanvas, reprojectionCloud);
+        }
+    }
+    reprojectionGpuFallback.classList.toggle(
+        "active", reprojectionState.gpuFallbackReady
+    );
+    reprojectionGpuCanvas.classList.add("active");
+    if (reprojectionLayout.value === "side") {
+        // The detailed canvas remains the centered flex item. Overlay the
+        // snapshot on its exact untransformed box without adding a second
+        // flex item that would shrink or displace it.
+        reprojectionGpuFallback.style.left = `${reprojectionGpuCanvas.offsetLeft}px`;
+        reprojectionGpuFallback.style.top = `${reprojectionGpuCanvas.offsetTop}px`;
+        reprojectionGpuFallback.style.width = `${reprojectionGpuCanvas.clientWidth}px`;
+        reprojectionGpuFallback.style.height = `${reprojectionGpuCanvas.clientHeight}px`;
+    }
+    reprojectionCloud.style.visibility = "hidden";
+    reprojectionCloudSide.style.visibility = "hidden";
+}
+
+function disableReprojectionGpuCanvas() {
+    reprojectionState.gpuFallbackReady = false;
+    reprojectionGpuFallback.classList.remove("active");
+    reprojectionGpuFallback.style.transform = "";
+    reprojectionGpuCanvas.classList.remove("active");
+    reprojectionGpuCanvas.style.transform = "";
+}
+
 function applyReprojectionViewTransform() {
+    reprojectionViewer.classList.toggle(
+        "zoomed-in", reprojectionState.viewScale > 1 + 1e-6
+    );
     if (reprojectionLayout.value === "side") {
         setImageTransform(reprojectionCloudSide);
+        if (reprojectionState.renderMode === "gpu") {
+            setImageTransform(reprojectionGpuFallback);
+            applyReprojectionGpuViewTransform();
+        }
         setImageTransform(reprojectionInputSide, true);
     } else {
         setImageTransform(reprojectionCloud);
+        if (reprojectionState.renderMode === "gpu") {
+            setImageTransform(reprojectionGpuFallback);
+            applyReprojectionGpuViewTransform();
+        }
         setImageTransform(reprojectionInput, true);
     }
+}
+
+function applyInteractiveReprojectionViewTransform() {
+    applyReprojectionViewTransform();
+    if (reprojectionState.renderMode === "gpu") {
+        scheduleZoomDetailRefresh(80);
+    }
+}
+
+function captureReprojectionGpuFallback() {
+    const context = reprojectionGpuFallback.getContext("2d", {alpha: false});
+    reprojectionGpuFallback.width = reprojectionGpuCanvas.width;
+    reprojectionGpuFallback.height = reprojectionGpuCanvas.height;
+    context.drawImage(reprojectionGpuCanvas, 0, 0);
+    reprojectionState.gpuFallbackReady = true;
+}
+
+function isFullFrameGpuView(view) {
+    return Math.abs(view.scale - 1) < 1e-6
+        && Math.abs(view.translateX) < 1e-6
+        && Math.abs(view.translateY) < 1e-6;
+}
+
+function currentReprojectionView() {
+    return {
+        scale: reprojectionState.viewScale,
+        translateX: reprojectionState.viewTranslateX,
+        translateY: reprojectionState.viewTranslateY,
+    };
+}
+
+function applyReprojectionGpuViewTransform() {
+    const transform = ReprojectionGpu.relativeViewTransform(
+        reprojectionState.gpuRenderedView,
+        currentReprojectionView()
+    );
+    reprojectionGpuCanvas.style.transform = `matrix(${transform.scale}, 0, 0, `
+        + `${transform.scale}, ${transform.translateX}, ${transform.translateY})`;
+}
+
+function reprojectionDisplaySize(image) {
+    if (reprojectionLayout.value !== "side") {
+        return {
+            width: reprojectionSplit.clientWidth,
+            height: reprojectionSplit.clientHeight,
+        };
+    }
+    const pane = reprojectionSide.querySelector(".reprojection-pane");
+    const bounds = pane.getBoundingClientRect();
+    const aspect = image.width / image.height;
+    let width = bounds.width;
+    let height = width / aspect;
+    if (height > bounds.height) {
+        height = bounds.height;
+        width = height * aspect;
+    }
+    return {width, height};
 }
 
 function activeReprojectionInput() {
@@ -289,6 +492,7 @@ function syncActiveReprojectionSources() {
     if (reprojectionState.currentRenderUrl) {
         applyReprojectionRenderSource(reprojectionState.currentRenderUrl);
     }
+    attachReprojectionGpuCanvas();
 }
 
 function reprojectionImageBounds(clientX) {
@@ -336,6 +540,7 @@ function zoomReprojectionView(event) {
         - (mouseY - reprojectionState.viewTranslateY) * ratio;
     reprojectionState.viewScale = newScale;
     applyReprojectionViewTransform();
+    scheduleZoomDetailRefresh();
 }
 
 function resetReprojectionViewTransform() {
@@ -343,6 +548,37 @@ function resetReprojectionViewTransform() {
     reprojectionState.viewTranslateX = 0;
     reprojectionState.viewTranslateY = 0;
     applyReprojectionViewTransform();
+    scheduleZoomDetailRefresh(0);
+}
+
+function currentZoomDetailMaxSize(image) {
+    return ReprojectionGpu.zoomDetailMaxSize(
+        image,
+        currentPreviewMaxSize(),
+        reprojectionState.viewScale,
+        reprojectionState.navigationPreview,
+        Math.min(reprojectionState.maxInputSize, 8192)
+    );
+}
+
+function scheduleZoomDetailRefresh(delay = 120) {
+    window.clearTimeout(reprojectionState.zoomDetailTimer);
+    if (!reprojectionState.loaded) {
+        return;
+    }
+    const generation = reprojectionState.generation;
+    reprojectionState.zoomDetailTimer = window.setTimeout(() => {
+        if (generation !== reprojectionState.generation) {
+            return;
+        }
+        const image = reprojectionState.images[reprojectionState.currentIndex];
+        const maxSize = currentZoomDetailMaxSize(image);
+        const urls = reprojectionUrls(image, reprojectionIdentity.id, maxSize);
+        applyReprojectionInputSource(urls.input);
+        if (reprojectionState.renderMode === "gpu") {
+            renderReprojectionGpuFrame(generation);
+        }
+    }, delay);
 }
 
 function currentPreviewMaxSize() {
@@ -360,12 +596,14 @@ function pointRenderParameters() {
     });
 }
 
-function reprojectionUrls(image) {
+function reprojectionUrls(
+    image, requestStream = reprojectionIdentity.id,
+    inputMaxSize = currentPreviewMaxSize()
+) {
     const base = `/api/reprojection/${image.id}`;
     const dataset = encodeURIComponent(reprojectionState.datasetNamespace);
-    const stream = encodeURIComponent(reprojectionIdentity.id);
+    const stream = encodeURIComponent(requestStream);
     const geometry = encodeURIComponent(reprojectionState.geometryCacheToken);
-    const inputMaxSize = currentPreviewMaxSize();
     const pointRender = pointRenderParameters();
     return {
         input: `${base}/input?max_size=${inputMaxSize}`
@@ -373,17 +611,18 @@ function reprojectionUrls(image) {
         render: `${base}/render?max_size=${pointRender.maxSize}`
             + `&color=${encodeURIComponent(reprojectionColor.value)}`
             + `&radius=${pointRender.radius}&dataset=${dataset}&stream=${stream}`
-            + `&geometry=${geometry}`,
+            + `&geometry=${geometry}&format=png-v2`,
     };
 }
 
-async function uploadReprojectionGeometry(file) {
+async function uploadServerGeometry(file) {
     if (!file || !file.name.toLowerCase().endsWith(".ply")) {
         setReprojectionStatus("Only PLY point clouds and meshes are supported.", true);
         return;
     }
     await reprojectionIdentityReady;
     reprojectionUploadGeneration += 1;
+    reprojectionState.browserGeometryLoading = false;
     ViewerStreamIdentity.writeSession(
         reprojectionUploadGenerationKey,
         String(reprojectionUploadGeneration)
@@ -402,6 +641,9 @@ async function uploadReprojectionGeometry(file) {
         if (reprojectionUploadController !== uploadController) {
             return;
         }
+        reprojectionGpuRenderer?.disposeGeometry();
+        reprojectionState.renderMode = "server";
+        disableReprojectionGpuCanvas();
         applyGeometryStatus(geometry);
         if (reprojectionState.loaded) {
             loadReprojectionFrame(reprojectionState.currentIndex);
@@ -422,11 +664,113 @@ async function uploadReprojectionGeometry(file) {
     }
 }
 
+async function loadReprojectionGeometry(file) {
+    if (!file || !file.name.toLowerCase().endsWith(".ply")) {
+        setReprojectionStatus("Only PLY point clouds and meshes are supported.", true);
+        return;
+    }
+    const image = reprojectionState.images[reprojectionState.currentIndex];
+    let kind;
+    try {
+        kind = await ReprojectionGpu.ReprojectionGpuRenderer.inspectFile(file);
+    } catch (error) {
+        setReprojectionStatus(`Failed to inspect ${file.name}: ${error.message}`, true);
+        return;
+    }
+
+    // Distorted cameras still use the numerical renderer, which applies the
+    // exact COLMAP camera model. The Three path is exact for pinhole cameras.
+    if (!image || !ReprojectionGpu.isPinholeCamera(image)) {
+        await uploadServerGeometry(file);
+        return;
+    }
+
+    await installBrowserGeometry(
+        file.name,
+        (renderer, isCurrent) => renderer.loadFile(file, kind, isCurrent)
+    );
+}
+
+async function loadConfiguredReprojectionGeometry(configuredGeometry) {
+    const image = reprojectionState.images[reprojectionState.currentIndex];
+    if (!image || !ReprojectionGpu.isPinholeCamera(image)) {
+        return false;
+    }
+    const loadGeometry = configuredGeometry.mesh_stream
+        ? (renderer, isCurrent) => renderer.loadMeshStream(
+            configuredGeometry.mesh_stream,
+            image,
+            isCurrent,
+            (completed, total) => setReprojectionStatus(
+                `Streaming and preparing ${configuredGeometry.name}: `
+                + `${completed} / ${total} chunks…`
+            )
+        )
+        : (renderer, isCurrent) => renderer.loadUrl(
+            configuredGeometry.url, configuredGeometry.size, isCurrent
+        );
+    return installBrowserGeometry(configuredGeometry.name, loadGeometry);
+}
+
+async function installBrowserGeometry(name, loadGeometry) {
+    const renderer = getReprojectionGpuRenderer();
+
+    reprojectionUploadGeneration += 1;
+    const generation = reprojectionUploadGeneration;
+    ViewerStreamIdentity.writeSession(reprojectionUploadGenerationKey, String(generation));
+    reprojectionUploadController?.abort();
+    reprojectionUploadController = null;
+    reprojectionState.browserGeometryLoading = true;
+    stopContinuousNavigation(false);
+    reprojectionGeometryDrop.classList.add("loading");
+    reprojectionUseColmap.disabled = true;
+    setReprojectionStatus(`Loading ${name} directly in the browser…`);
+    try {
+        const geometry = await loadGeometry(
+            renderer, () => generation === reprojectionUploadGeneration
+        );
+        if (!geometry || generation !== reprojectionUploadGeneration) {
+            return false;
+        }
+        reprojectionState.renderMode = "gpu";
+        disableReprojectionGpuCanvas();
+        applyGeometryStatus({
+            name,
+            kind: geometry.kind,
+            point_count: geometry.count,
+            cache_token: `browser-${generation}`,
+            gpu: true,
+        });
+        attachReprojectionGpuCanvas();
+        if (reprojectionState.loaded) {
+            loadReprojectionFrame(reprojectionState.currentIndex);
+        }
+        return true;
+    } catch (error) {
+        if (generation === reprojectionUploadGeneration) {
+            setReprojectionStatus(`Failed to load ${name}: ${error.message}`, true);
+        }
+        return false;
+    } finally {
+        if (generation === reprojectionUploadGeneration) {
+            reprojectionState.browserGeometryLoading = false;
+            reprojectionGeometryDrop.classList.remove("loading", "drag-over");
+            reprojectionGeometryFile.value = "";
+            reprojectionUseColmap.disabled = reprojectionState.geometryKind === "colmap";
+        }
+    }
+}
+
 async function resetReprojectionGeometry() {
     await reprojectionIdentityReady;
     reprojectionUploadController?.abort();
     reprojectionUploadController = null;
     reprojectionGeometryDrop.classList.remove("loading", "drag-over");
+    reprojectionUploadGeneration += 1;
+    reprojectionState.browserGeometryLoading = false;
+    reprojectionGpuRenderer?.disposeGeometry();
+    reprojectionState.renderMode = "server";
+    disableReprojectionGpuCanvas();
     stopContinuousNavigation(false);
     reprojectionUseColmap.disabled = true;
     setReprojectionStatus("Restoring COLMAP points3D…");
@@ -445,6 +789,9 @@ async function heartbeatReprojectionStream() {
     await reprojectionIdentityReady;
     try {
         const geometry = await reprojectionApi.heartbeat();
+        if (reprojectionState.renderMode === "gpu") {
+            return false;
+        }
         const changed = geometry.cache_token
             !== reprojectionState.geometryCacheToken;
         if (changed) {
@@ -476,7 +823,7 @@ function handleGeometryDrop(event) {
     handleGeometryDrag(event);
     const file = event.dataTransfer?.files?.[0];
     if (file) {
-        uploadReprojectionGeometry(file);
+        loadReprojectionGeometry(file);
     }
 }
 
@@ -523,16 +870,77 @@ function prefetchReprojectionNeighbors(generation) {
         reprojectionState.currentIndex - 1,
         reprojectionState.currentIndex + 1,
     ];
-    neighbors.forEach(index => {
+    neighbors.forEach((index, slot) => {
         if (index < 0 || index >= reprojectionState.images.length) {
             return;
         }
         // Input decoding is safe to preload. Point renders are intentionally
         // never speculative: obsolete camera projections must not queue behind
         // the camera the user is currently requesting.
-        const urls = reprojectionUrls(reprojectionState.images[index]);
+        // Prefetches use dedicated supersession streams. A canceled speculative
+        // 204 must never become the cached response for visible navigation.
+        const prefetchStream = `${reprojectionIdentity.id}:prefetch:${slot}`;
+        const urls = reprojectionUrls(
+            reprojectionState.images[index], prefetchStream
+        );
         prefetchUrl(urls.input);
     });
+}
+
+async function renderReprojectionGpuFrame(generation) {
+    if (generation !== reprojectionState.generation
+            || reprojectionState.renderMode !== "gpu") {
+        return;
+    }
+    const image = reprojectionState.images[reprojectionState.currentIndex];
+    const frameRequest = ++reprojectionState.gpuFrameRequest;
+    const renderer = getReprojectionGpuRenderer();
+    if (!renderer.supportsCamera(image)) {
+        setReprojectionStatus(
+            `${image.name}: browser rendering currently requires a PINHOLE camera`, true
+        );
+        disableReprojectionGpuCanvas();
+        return;
+    }
+    const display = reprojectionDisplaySize(image);
+    if (display.width <= 0 || display.height <= 0) {
+        return;
+    }
+    const renderSize = ReprojectionGpu.screenRenderSize(
+        display.width,
+        display.height,
+        window.devicePixelRatio,
+        Math.min(reprojectionState.maxInputSize, 8192)
+    );
+    const renderedView = currentReprojectionView();
+    const region = ReprojectionGpu.zoomViewRegion(
+        image,
+        display.width,
+        display.height,
+        renderedView.scale,
+        renderedView.translateX,
+        renderedView.translateY
+    );
+    try {
+        await renderer.render(
+            image, renderSize.width, renderSize.height, region
+        );
+        if (frameRequest !== reprojectionState.gpuFrameRequest
+                || generation !== reprojectionState.generation
+                || reprojectionState.renderMode !== "gpu") {
+            return;
+        }
+        if (isFullFrameGpuView(renderedView)) {
+            captureReprojectionGpuFallback();
+        }
+        reprojectionState.gpuRenderedView = renderedView;
+        attachReprojectionGpuCanvas();
+        applyReprojectionViewTransform();
+    } catch (error) {
+        if (generation === reprojectionState.generation) {
+            setReprojectionStatus(`Failed to render ${image.name}: ${error.message}`, true);
+        }
+    }
 }
 
 function loadReprojectionFrame(index) {
@@ -547,15 +955,20 @@ function loadReprojectionFrame(index) {
     const generation = ++reprojectionState.generation;
     window.clearTimeout(reprojectionState.navigationPointTimer);
     window.clearTimeout(reprojectionState.pointSizeRenderTimer);
+    window.clearTimeout(reprojectionState.zoomDetailTimer);
     reprojectionState.currentRenderUrl = null;
     reprojectionCloud.style.visibility = "hidden";
     reprojectionCloudSide.style.visibility = "hidden";
+    if (reprojectionState.renderMode === "gpu") {
+        disableReprojectionGpuCanvas();
+    }
     setReprojectionStatus(
         `Loading image ${reprojectionState.currentIndex + 1} / ${reprojectionState.images.length}…`
     );
 
     const urls = reprojectionUrls(image);
-    const renderCancellation = cancelReprojectionRender();
+    const renderCancellation = reprojectionState.renderMode === "server"
+        ? cancelReprojectionRender() : Promise.resolve();
     const inputElement = activeReprojectionInput();
     reprojectionInput.onload = null;
     reprojectionInput.onerror = null;
@@ -575,14 +988,34 @@ function loadReprojectionFrame(index) {
         // Geometry is deliberately delayed until image navigation settles.
         reprojectionState.navigationPointTimer = window.setTimeout(async () => {
             await renderCancellation;
-            requestReprojectionPointLayer(generation);
+            if (reprojectionState.browserGeometryLoading) {
+                return;
+            }
+            if (reprojectionState.renderMode === "gpu") {
+                renderReprojectionGpuFrame(generation);
+            } else {
+                requestReprojectionPointLayer(generation);
+            }
         }, 180);
         window.setTimeout(() => prefetchReprojectionNeighbors(generation), 260);
-    };
-    inputElement.onerror = () => {
-        if (generation === reprojectionState.generation) {
-            setReprojectionStatus(`Failed to load ${image.name}`, true);
+        if (reprojectionState.viewScale > 1
+                && !reprojectionState.navigationPreview) {
+            scheduleZoomDetailRefresh(300);
         }
+    };
+    let inputRetryCount = 0;
+    inputElement.onerror = () => {
+        if (generation !== reprojectionState.generation) {
+            return;
+        }
+        if (inputRetryCount === 0) {
+            inputRetryCount += 1;
+            const retryUrl = `${urls.input}&retry=${generation}`;
+            reprojectionState.currentInputUrl = retryUrl;
+            inputElement.src = retryUrl;
+            return;
+        }
+        setReprojectionStatus(`Failed to load ${image.name}`, true);
     };
     // Reusing the visible element lets the browser replace an obsolete image
     // request immediately instead of queueing detached preload/decode work.
@@ -593,6 +1026,10 @@ function loadReprojectionFrame(index) {
 }
 
 function requestReprojectionPointLayer(generation = reprojectionState.generation) {
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(generation);
+        return;
+    }
     reprojectionPointRequester.request(generation);
 }
 
@@ -671,6 +1108,11 @@ function applyReprojectionFlip() {
 function setReprojectionPointSize(value) {
     const size = ReprojectionPointSize.normalize(value);
     reprojectionPointSize.value = size;
+    if (reprojectionState.renderMode === "gpu") {
+        reprojectionGpuRenderer?.setPointSize(size);
+        renderReprojectionGpuFrame(reprojectionState.generation);
+        return;
+    }
     // Normal sizes reuse cached projection/splat data and should respond on
     // every wheel step. Only fractional sizes require a cold supersampled
     // render, so coalesce that short three-step range.
@@ -693,6 +1135,79 @@ reprojectionColor.addEventListener("change", loadReprojectionPointLayer);
 reprojectionPointSize.addEventListener("change", () => {
     setReprojectionPointSize(reprojectionPointSize.value);
 });
+reprojectionMeshShading.addEventListener("change", () => {
+    getReprojectionGpuRenderer().setMeshShading(reprojectionMeshShading.value);
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+    }
+});
+reprojectionMeshColor.addEventListener("change", () => {
+    getReprojectionGpuRenderer().setMeshColor(reprojectionMeshColor.value);
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+    }
+});
+function applyMeshBrightness(value = reprojectionMeshBrightnessValue.value) {
+    const normalized = getReprojectionGpuRenderer().setMeshBrightness(
+        value
+    );
+    reprojectionMeshBrightness.value = normalized;
+    reprojectionMeshBrightnessValue.value = normalized.toFixed(2);
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+    }
+}
+
+reprojectionMeshBrightness.addEventListener("input", () => {
+    const value = Number(reprojectionMeshBrightness.value);
+    reprojectionMeshBrightnessValue.value = value.toFixed(2);
+    window.clearTimeout(reprojectionState.meshBrightnessTimer);
+    reprojectionState.meshBrightnessTimer = window.setTimeout(
+        () => applyMeshBrightness(value), 120
+    );
+});
+reprojectionMeshBrightness.addEventListener("change", () => {
+    window.clearTimeout(reprojectionState.meshBrightnessTimer);
+    applyMeshBrightness(reprojectionMeshBrightness.value);
+});
+reprojectionMeshBrightnessValue.addEventListener("input", () => {
+    const value = Number(reprojectionMeshBrightnessValue.value);
+    if (!Number.isFinite(value)) {
+        return;
+    }
+    reprojectionMeshBrightness.value = value;
+    window.clearTimeout(reprojectionState.meshBrightnessTimer);
+    reprojectionState.meshBrightnessTimer = window.setTimeout(
+        () => applyMeshBrightness(value), 120
+    );
+});
+reprojectionMeshBrightnessValue.addEventListener("change", () => {
+    window.clearTimeout(reprojectionState.meshBrightnessTimer);
+    applyMeshBrightness(reprojectionMeshBrightnessValue.value);
+});
+function applyBackgroundColors(renderDelay = 60) {
+    const category = backgroundCategory();
+    const colors = reprojectionState.backgroundColors[category];
+    colors.top = reprojectionBackgroundTop.value;
+    colors.bottom = reprojectionBackgroundBottom.value;
+    getReprojectionGpuRenderer().setBackgroundColors(colors.top, colors.bottom);
+    window.clearTimeout(reprojectionState.backgroundRenderTimer);
+    if (reprojectionState.renderMode !== "gpu") {
+        return;
+    }
+    const generation = reprojectionState.generation;
+    reprojectionState.backgroundRenderTimer = window.setTimeout(() => {
+        if (generation === reprojectionState.generation
+                && category === backgroundCategory()) {
+            renderReprojectionGpuFrame(generation);
+        }
+    }, renderDelay);
+}
+
+[reprojectionBackgroundTop, reprojectionBackgroundBottom].forEach(input => {
+    input.addEventListener("input", () => applyBackgroundColors());
+    input.addEventListener("change", () => applyBackgroundColors(0));
+});
 reprojectionFlip.addEventListener("change", applyReprojectionFlip);
 reprojectionSplitAngle.addEventListener("change", () => {
     reprojectionInteraction.setAngle(
@@ -711,7 +1226,7 @@ reprojectionGeometryDrop.addEventListener("keydown", event => {
     }
 });
 reprojectionGeometryFile.addEventListener("change", () => {
-    uploadReprojectionGeometry(reprojectionGeometryFile.files[0]);
+    loadReprojectionGeometry(reprojectionGeometryFile.files[0]);
 });
 reprojectionUseColmap.addEventListener("click", resetReprojectionGeometry);
 [reprojectionGeometryDrop, reprojectionViewer].forEach(target => {
@@ -730,6 +1245,9 @@ reprojectionLayout.addEventListener("change", () => {
     }
     syncActiveReprojectionSources();
     resetReprojectionViewTransform();
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+    }
 });
 reprojectionInteraction.attach();
 reprojectionViewer.addEventListener("wheel", event => {
@@ -742,7 +1260,12 @@ reprojectionViewer.addEventListener("wheel", event => {
         zoomReprojectionView(event);
     }
 }, {passive: false});
-window.addEventListener("resize", fitReprojectionSplit);
+window.addEventListener("resize", () => {
+    fitReprojectionSplit();
+    if (reprojectionState.renderMode === "gpu") {
+        scheduleZoomDetailRefresh(100);
+    }
+});
 window.addEventListener("keydown", event => {
     if (document.body.dataset.viewerMode !== "reprojection") {
         return;

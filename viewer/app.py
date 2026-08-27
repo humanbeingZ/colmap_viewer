@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
+import ipaddress
 import os
 from pathlib import Path
 import tempfile
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -53,6 +54,15 @@ templates = Jinja2Templates(
 )
 
 
+def _is_loopback_request(request: Request) -> bool:
+    if request.client is None:
+        return False
+    try:
+        return ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        return False
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse(
@@ -97,15 +107,31 @@ async def get_sources():
 
 
 @app.get("/api/capabilities")
-async def get_capabilities(stream: str = "default"):
+async def get_capabilities(request: Request, stream: str = "default"):
     available = colmap_service.has_reprojection_data()
     if available:
         colmap_service.start_reprojection_warmup()
+    configured_geometry = None
+    if _is_loopback_request(request):
+        configured_geometry = colmap_service.get_configured_geometry_file()
+        if configured_geometry:
+            token = configured_geometry.pop("token")
+            configured_geometry["url"] = (
+                f"/api/reprojection/configured-geometry?token={token}"
+            )
+            mesh_stream = configured_geometry.get("mesh_stream")
+            if mesh_stream:
+                mesh_stream["chunk_url"] = (
+                    "/api/reprojection/configured-mesh-chunks/"
+                    f"{{chunk_index}}?token={token}"
+                )
     return {
         "reprojection": available,
         "dataset_namespace": colmap_service.cache_namespace,
         "max_reprojection_size": colmap_service.MAX_REPROJECTION_SIZE,
+        "max_input_size": colmap_service.MAX_INPUT_SIZE,
         "geometry": colmap_service.get_geometry_status(stream),
+        "configured_geometry": configured_geometry,
     }
 
 
@@ -117,6 +143,36 @@ async def get_reprojection_images():
             detail="3D reprojection requires a sparse model with registered camera poses.",
         )
     return colmap_service.get_reprojection_images()
+
+
+@app.get("/api/reprojection/configured-geometry")
+async def get_configured_reprojection_geometry(request: Request, token: str):
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Local access only")
+    geometry_path = colmap_service.resolve_configured_geometry_file(token)
+    if geometry_path is None:
+        raise HTTPException(status_code=404, detail="Configured geometry not found")
+    return FileResponse(
+        geometry_path,
+        media_type="application/octet-stream",
+        filename=os.path.basename(geometry_path),
+    )
+
+
+@app.get("/api/reprojection/configured-mesh-chunks/{chunk_index}")
+def get_configured_mesh_chunk(request: Request, chunk_index: int, token: str):
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Local access only")
+    mesh_stream = colmap_service.get_configured_mesh_stream(token)
+    if mesh_stream is None:
+        raise HTTPException(status_code=404, detail="Streamable mesh not found")
+    try:
+        payload = mesh_stream.encode_chunk(chunk_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(content=payload, media_type="application/octet-stream")
 
 
 @app.post("/api/reprojection/geometry")
