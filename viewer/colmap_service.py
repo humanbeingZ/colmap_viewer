@@ -65,9 +65,10 @@ class ColmapService:
         self.db_path = db_path
         self.geometry_path = geometry_path
         self._geometry_file_token = secrets.token_urlsafe(32)
+        self._configured_geometry_server_loaded = False
         self._configured_mesh_stream: Optional[StreamablePlyMesh] = None
         self._configured_mesh_stream_inspected = False
-        self._configured_mesh_stream_lock = threading.Lock()
+        self._configured_geometry_lock = threading.RLock()
         namespace_source = "\0".join(
             os.path.abspath(path) if path else ""
             for path in (image_path, project_path, db_path)
@@ -110,28 +111,74 @@ class ColmapService:
         )
 
     def get_configured_geometry_file(self) -> Optional[Dict[str, Any]]:
-        """Describe the explicit CLI geometry without exposing its path."""
-        if not self.geometry_path or not os.path.isfile(self.geometry_path):
-            return None
-        descriptor = {
-            "name": os.path.basename(self.geometry_path),
-            "size": os.path.getsize(self.geometry_path),
-            "token": self._geometry_file_token,
-        }
-        mesh_stream = self.get_configured_mesh_stream()
-        if mesh_stream and mesh_stream.face_count > mesh_stream.chunk_face_count:
-            descriptor["mesh_stream"] = mesh_stream.manifest()
-        return descriptor
+        """Describe the selected server-local geometry without exposing its path."""
+        with self._configured_geometry_lock:
+            path = self.geometry_path
+            if not path or not os.path.isfile(path):
+                return None
+            if not self._configured_mesh_stream_inspected:
+                self._configured_mesh_stream = StreamablePlyMesh.inspect(path)
+                self._configured_mesh_stream_inspected = True
+            descriptor = {
+                "name": os.path.basename(path),
+                "size": os.path.getsize(path),
+                "token": self._geometry_file_token,
+                "server_loaded": self._configured_geometry_server_loaded,
+            }
+            mesh_stream = self._configured_mesh_stream
+            if mesh_stream and mesh_stream.face_count > mesh_stream.chunk_face_count:
+                descriptor["mesh_stream"] = mesh_stream.manifest()
+            return descriptor
+
+    def set_configured_geometry_file(self, path: str) -> Dict[str, Any]:
+        """Select a server-local PLY for the configured streaming path."""
+        expanded = os.path.expanduser(path)
+        if not os.path.isabs(expanded):
+            raise ValueError("Local geometry path must be absolute")
+        resolved = os.path.realpath(expanded)
+        if os.path.splitext(resolved)[1].lower() != ".ply":
+            raise ValueError("Local geometry must be a .ply file")
+        if not os.path.isfile(resolved):
+            raise ValueError("Local geometry file does not exist")
+        self._ply_loader.validate_header(resolved)
+        with self._configured_geometry_lock:
+            self.geometry_path = resolved
+            self._geometry_file_token = secrets.token_urlsafe(32)
+            self._configured_geometry_server_loaded = False
+            self._configured_mesh_stream = None
+            self._configured_mesh_stream_inspected = False
+        return self.get_configured_geometry_file()
+
+    def activate_configured_geometry(
+        self, token: str, request_stream: str = "default"
+    ) -> Dict[str, Any]:
+        path = self.resolve_configured_geometry_file(token)
+        if path is None:
+            raise ValueError("Configured geometry selection has changed")
+        status = self.load_external_geometry(
+            path,
+            request_stream=request_stream,
+            as_default=True,
+            configured_token=token,
+        )
+        with self._configured_geometry_lock:
+            if (
+                self.geometry_path == path
+                and hmac.compare_digest(token, self._geometry_file_token)
+            ):
+                self._configured_geometry_server_loaded = True
+        return status
 
     def resolve_configured_geometry_file(self, token: str) -> Optional[str]:
-        """Resolve the configured CLI file for its unguessable capability token."""
-        if not self.geometry_path or not hmac.compare_digest(
-            token, self._geometry_file_token
-        ):
-            return None
-        if not os.path.isfile(self.geometry_path):
-            return None
-        return self.geometry_path
+        """Resolve selected geometry for its unguessable capability token."""
+        with self._configured_geometry_lock:
+            if not self.geometry_path or not hmac.compare_digest(
+                token, self._geometry_file_token
+            ):
+                return None
+            if not os.path.isfile(self.geometry_path):
+                return None
+            return self.geometry_path
 
     def get_configured_mesh_stream(
         self, token: Optional[str] = None
@@ -140,7 +187,7 @@ class ColmapService:
             return None
         if not self.geometry_path or not os.path.isfile(self.geometry_path):
             return None
-        with self._configured_mesh_stream_lock:
+        with self._configured_geometry_lock:
             if not self._configured_mesh_stream_inspected:
                 self._configured_mesh_stream = StreamablePlyMesh.inspect(
                     self.geometry_path
@@ -186,6 +233,7 @@ class ColmapService:
 
         if self.geometry_path:
             self.load_external_geometry(self.geometry_path, as_default=True)
+            self._configured_geometry_server_loaded = True
 
     def get_available_sources(self) -> List[str]:
         """Returns a list of names of the available data sources."""
@@ -245,6 +293,7 @@ class ColmapService:
         request_stream: str = "default",
         as_default: bool = False,
         upload_token: Optional[int] = None,
+        configured_token: Optional[str] = None,
     ):
         if os.path.splitext(path)[1].lower() != ".ply":
             raise ValueError("External geometry must be a .ply file")
@@ -270,7 +319,21 @@ class ColmapService:
                 cache_token=content_hash.hexdigest()[:16],
             )
             if as_default:
-                self._geometry_store.set_default(geometry)
+                if configured_token is None:
+                    self._geometry_store.set_default(geometry)
+                else:
+                    with self._configured_geometry_lock:
+                        if (
+                            not self.geometry_path
+                            or self.geometry_path != path
+                            or not hmac.compare_digest(
+                                configured_token, self._geometry_file_token
+                            )
+                        ):
+                            raise ValueError(
+                                "Configured geometry selection has changed"
+                            )
+                        self._geometry_store.set_default(geometry)
             else:
                 self._geometry_store.install(stream, upload_token, geometry)
         finally:

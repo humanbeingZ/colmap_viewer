@@ -14,6 +14,8 @@ const fetchImpl = async (url, options = {}) => {
     const api = new ReprojectionApi(() => "viewer id", fetchImpl);
     await api.capabilities();
     await api.uploadGeometry({name: "cloud file.ply"}, 7, "signal");
+    await api.loadLocalGeometry("/data/mesh file.ply");
+    await api.activateConfiguredGeometry("/activate?token=secret");
     await api.resetGeometry();
     await api.heartbeat();
     await api.cancelRender();
@@ -22,9 +24,19 @@ const fetchImpl = async (url, options = {}) => {
     assert.ok(requests[1].url.includes("filename=cloud%20file.ply"));
     assert.ok(requests[1].url.includes("generation=7"));
     assert.strictEqual(requests[1].options.method, "POST");
-    assert.strictEqual(requests[2].options.method, "DELETE");
+    assert.strictEqual(requests[2].url, "/api/reprojection/local-geometry");
+    assert.deepStrictEqual(
+        JSON.parse(requests[2].options.body),
+        {path: "/data/mesh file.ply"}
+    );
+    assert.strictEqual(
+        requests[3].url,
+        "/activate?token=secret&stream=viewer%20id"
+    );
     assert.strictEqual(requests[3].options.method, "POST");
-    assert.strictEqual(requests[4].options.method, "POST");
+    assert.strictEqual(requests[4].options.method, "DELETE");
+    assert.strictEqual(requests[5].options.method, "POST");
+    assert.strictEqual(requests[6].options.method, "POST");
 
     console.log("reprojection API tests passed");
 })().catch(error => {

@@ -96,7 +96,7 @@ class PlyGeometryLoader:
         face_index_name = None
         try:
             with open(path, "rb") as source:
-                for _ in range(10000):
+                for line_index in range(10000):
                     raw_line = source.readline()
                     if not raw_line:
                         raise ValueError("PLY header has no end_header")
@@ -106,6 +106,8 @@ class PlyGeometryLoader:
                         line = raw_line.decode("ascii").strip()
                     except UnicodeDecodeError as exc:
                         raise ValueError("PLY header is not ASCII") from exc
+                    if line_index == 0 and line != "ply":
+                        raise ValueError("File does not begin with a PLY header")
                     fields = line.split()
                     if not fields:
                         continue
@@ -133,6 +135,11 @@ class PlyGeometryLoader:
             "elements": elements,
             "face_index_name": face_index_name,
         }
+
+    @classmethod
+    def validate_header(cls, path: str) -> None:
+        """Reject files that do not contain a bounded, parseable PLY header."""
+        cls._ply_header_info(path)
 
     def _vertex_selection(self, count: int):
         if count <= self.max_points:

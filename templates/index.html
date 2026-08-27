@@ -225,6 +225,15 @@
                               class="reprojection-summary-value">COLMAP</span>
                     </summary>
                     <div class="reprojection-disclosure-content">
+                        <label for="reprojection-local-path">Server-local PLY path</label>
+                        <div class="reprojection-local-path">
+                            <input id="reprojection-local-path" type="text"
+                                   placeholder="/absolute/path/to/geometry.ply"
+                                   spellcheck="false">
+                            <button id="reprojection-load-local-path" type="button">
+                                Load
+                            </button>
+                        </div>
                         <div id="reprojection-geometry-drop" class="geometry-drop-zone"
                              role="button" tabindex="0">
                             <strong>Drop or select a PLY</strong>

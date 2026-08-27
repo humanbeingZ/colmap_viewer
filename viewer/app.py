@@ -106,6 +106,26 @@ async def get_sources():
     return colmap_service.get_available_sources()
 
 
+def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
+    configured_geometry = colmap_service.get_configured_geometry_file()
+    if not configured_geometry:
+        return None
+    token = configured_geometry.pop("token")
+    configured_geometry["url"] = (
+        f"/api/reprojection/configured-geometry?token={token}"
+    )
+    configured_geometry["activate_url"] = (
+        f"/api/reprojection/configured-geometry/activate?token={token}"
+    )
+    mesh_stream = configured_geometry.get("mesh_stream")
+    if mesh_stream:
+        mesh_stream["chunk_url"] = (
+            "/api/reprojection/configured-mesh-chunks/"
+            f"{{chunk_index}}?token={token}"
+        )
+    return configured_geometry
+
+
 @app.get("/api/capabilities")
 async def get_capabilities(request: Request, stream: str = "default"):
     available = colmap_service.has_reprojection_data()
@@ -113,18 +133,9 @@ async def get_capabilities(request: Request, stream: str = "default"):
         colmap_service.start_reprojection_warmup()
     configured_geometry = None
     if _is_loopback_request(request):
-        configured_geometry = colmap_service.get_configured_geometry_file()
-        if configured_geometry:
-            token = configured_geometry.pop("token")
-            configured_geometry["url"] = (
-                f"/api/reprojection/configured-geometry?token={token}"
-            )
-            mesh_stream = configured_geometry.get("mesh_stream")
-            if mesh_stream:
-                mesh_stream["chunk_url"] = (
-                    "/api/reprojection/configured-mesh-chunks/"
-                    f"{{chunk_index}}?token={token}"
-                )
+        configured_geometry = await run_in_threadpool(
+            _configured_geometry_descriptor
+        )
     return {
         "reprojection": available,
         "dataset_namespace": colmap_service.cache_namespace,
@@ -133,6 +144,40 @@ async def get_capabilities(request: Request, stream: str = "default"):
         "geometry": colmap_service.get_geometry_status(stream),
         "configured_geometry": configured_geometry,
     }
+
+
+@app.post("/api/reprojection/local-geometry")
+async def set_local_reprojection_geometry(request: Request):
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Local access only")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    path = body.get("path") if isinstance(body, dict) else None
+    if not isinstance(path, str) or not path.strip():
+        raise HTTPException(status_code=400, detail="A local PLY path is required")
+    try:
+        await run_in_threadpool(
+            colmap_service.set_configured_geometry_file, path.strip()
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await run_in_threadpool(_configured_geometry_descriptor)
+
+
+@app.post("/api/reprojection/configured-geometry/activate")
+async def activate_configured_reprojection_geometry(
+    request: Request, token: str, stream: str = "default"
+):
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Local access only")
+    try:
+        return await run_in_threadpool(
+            colmap_service.activate_configured_geometry, token, stream
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/reprojection/images", response_model=List[Dict[str, Any]])

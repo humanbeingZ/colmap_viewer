@@ -40,6 +40,25 @@
             }));
         }
 
+        async loadLocalGeometry(path) {
+            return jsonResponse(await this.fetch(
+                "/api/reprojection/local-geometry",
+                {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({path}),
+                }
+            ));
+        }
+
+        async activateConfiguredGeometry(url) {
+            const separator = url.includes("?") ? "&" : "?";
+            return jsonResponse(await this.fetch(
+                `${url}${separator}${this.streamQuery()}`,
+                {method: "POST"}
+            ));
+        }
+
         async resetGeometry() {
             return jsonResponse(await this.fetch(
                 `/api/reprojection/geometry?${this.streamQuery()}`,

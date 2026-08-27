@@ -57,10 +57,19 @@ const reprojectionGeometrySummary = document.getElementById("reprojection-geomet
 const reprojectionClearGeometries = document.getElementById(
     "reprojection-clear-geometries"
 );
+const reprojectionLocalPath = document.getElementById("reprojection-local-path");
+const reprojectionLoadLocalPath = document.getElementById(
+    "reprojection-load-local-path"
+);
 
 const reprojectionStreamStorageKey = "colmap-viewer-reprojection-stream-v1";
 const reprojectionUploadGenerationKey = "colmap-viewer-upload-generation-v1";
 const paneSources = ReprojectionPaneSources;
+const configuredGeometryLoadResult = Object.freeze({
+    loaded: "loaded",
+    deferred: "deferred",
+    failed: "failed",
+});
 
 async function recoverFromLateIdentityCollision(replacementStream) {
     if (reprojectionIdentity.id !== replacementStream) {
@@ -630,13 +639,13 @@ async function ensureReprojectionImages() {
         reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
         loadReprojectionFrame(reprojectionState.currentIndex);
         if (reprojectionState.configuredGeometry) {
-            loadConfiguredReprojectionGeometry(
+            const result = await loadConfiguredReprojectionGeometry(
                 reprojectionState.configuredGeometry
-            ).then(loaded => {
-                if (!loaded && reprojectionState.renderMode === "server") {
-                    requestReprojectionPointLayer(reprojectionState.generation);
-                }
-            });
+            );
+            if (result !== configuredGeometryLoadResult.loaded
+                    && reprojectionState.renderMode === "server") {
+                requestReprojectionPointLayer(reprojectionState.generation);
+            }
             return;
         }
     } catch (error) {
@@ -1096,19 +1105,28 @@ function reprojectionUrls(
     };
 }
 
+function supersedeGeometryLoad({clearDropState = false} = {}) {
+    reprojectionUploadGeneration += 1;
+    ViewerStreamIdentity.writeSession(
+        reprojectionUploadGenerationKey,
+        String(reprojectionUploadGeneration)
+    );
+    reprojectionUploadController?.abort();
+    reprojectionUploadController = null;
+    reprojectionState.browserGeometryLoading = false;
+    if (clearDropState) {
+        reprojectionGeometryDrop.classList.remove("loading", "drag-over");
+    }
+    return reprojectionUploadGeneration;
+}
+
 async function uploadServerGeometry(file) {
     if (!file || !file.name.toLowerCase().endsWith(".ply")) {
         setReprojectionStatus("Only PLY point clouds and meshes are supported.", true);
         return;
     }
     await reprojectionIdentityReady;
-    reprojectionUploadGeneration += 1;
-    reprojectionState.browserGeometryLoading = false;
-    ViewerStreamIdentity.writeSession(
-        reprojectionUploadGenerationKey,
-        String(reprojectionUploadGeneration)
-    );
-    reprojectionUploadController?.abort();
+    const generation = supersedeGeometryLoad();
     const uploadController = new AbortController();
     reprojectionUploadController = uploadController;
     stopContinuousNavigation(false);
@@ -1117,7 +1135,7 @@ async function uploadServerGeometry(file) {
     setReprojectionStatus(`Loading ${file.name}…`);
     try {
         const geometry = await reprojectionApi.uploadGeometry(
-            file, reprojectionUploadGeneration, uploadController.signal
+            file, generation, uploadController.signal
         );
         if (reprojectionUploadController !== uploadController) {
             return;
@@ -1176,10 +1194,41 @@ async function loadReprojectionGeometry(file) {
 
 async function loadConfiguredReprojectionGeometry(configuredGeometry) {
     const image = reprojectionState.images[reprojectionState.currentIndex];
-    if (!image || !ReprojectionGpu.isPinholeCamera(image)) {
-        return false;
+    if (!image) {
+        return configuredGeometryLoadResult.deferred;
     }
-    const loadGeometry = configuredGeometry.mesh_stream
+    if (!ReprojectionGpu.isPinholeCamera(image)) {
+        await activateConfiguredServerGeometry(configuredGeometry);
+        return configuredGeometryLoadResult.loaded;
+    }
+    const installed = await installBrowserGeometry(
+        configuredGeometry.name,
+        configuredBrowserGeometryLoader(configuredGeometry, image)
+    );
+    return installed
+        ? configuredGeometryLoadResult.loaded
+        : configuredGeometryLoadResult.failed;
+}
+
+async function activateConfiguredServerGeometry(configuredGeometry) {
+    setReprojectionStatus(
+        `Preparing ${configuredGeometry.name} for server rendering…`
+    );
+    if (!configuredGeometry.server_loaded) {
+        const geometryStatus = await reprojectionApi.activateConfiguredGeometry(
+            configuredGeometry.activate_url
+        );
+        configuredGeometry.server_loaded = true;
+        applyGeometryStatus(geometryStatus);
+    }
+    reprojectionState.renderMode = "server";
+    if (reprojectionState.loaded) {
+        requestReprojectionPointLayer(reprojectionState.generation);
+    }
+}
+
+function configuredBrowserGeometryLoader(configuredGeometry, image) {
+    return configuredGeometry.mesh_stream
         ? (renderer, isCurrent) => renderer.loadMeshStream(
             configuredGeometry.mesh_stream,
             image,
@@ -1192,17 +1241,43 @@ async function loadConfiguredReprojectionGeometry(configuredGeometry) {
         : (renderer, isCurrent) => renderer.loadUrl(
             configuredGeometry.url, configuredGeometry.size, isCurrent
         );
-    return installBrowserGeometry(configuredGeometry.name, loadGeometry);
+}
+
+async function loadLocalReprojectionGeometry() {
+    const path = reprojectionLocalPath.value.trim();
+    if (!path) {
+        setReprojectionStatus("Enter an absolute server-local PLY path.", true);
+        return;
+    }
+    reprojectionLocalPath.disabled = true;
+    reprojectionLoadLocalPath.disabled = true;
+    setReprojectionStatus(`Inspecting ${path}…`);
+    try {
+        await reprojectionIdentityReady;
+        supersedeGeometryLoad({clearDropState: true});
+        const configuredGeometry = await reprojectionApi.loadLocalGeometry(path);
+        reprojectionState.configuredGeometry = configuredGeometry;
+        if (!reprojectionState.images.length) {
+            setReprojectionStatus(
+                `${configuredGeometry.name} selected; open 3D reprojection to load it.`
+            );
+            return;
+        }
+        await loadConfiguredReprojectionGeometry(configuredGeometry);
+    } catch (error) {
+        setReprojectionStatus(
+            `Failed to load local geometry: ${error.message}`, true
+        );
+    } finally {
+        reprojectionLocalPath.disabled = false;
+        reprojectionLoadLocalPath.disabled = false;
+    }
 }
 
 async function installBrowserGeometry(name, loadGeometry) {
     const renderer = getReprojectionGpuRenderer();
 
-    reprojectionUploadGeneration += 1;
-    const generation = reprojectionUploadGeneration;
-    ViewerStreamIdentity.writeSession(reprojectionUploadGenerationKey, String(generation));
-    reprojectionUploadController?.abort();
-    reprojectionUploadController = null;
+    const generation = supersedeGeometryLoad();
     reprojectionState.browserGeometryLoading = true;
     stopContinuousNavigation(false);
     reprojectionGeometryDrop.classList.add("loading");
@@ -1271,11 +1346,7 @@ async function installBrowserGeometry(name, loadGeometry) {
 
 async function clearLoadedGeometries() {
     await reprojectionIdentityReady;
-    reprojectionUploadController?.abort();
-    reprojectionUploadController = null;
-    reprojectionGeometryDrop.classList.remove("loading", "drag-over");
-    reprojectionUploadGeneration += 1;
-    reprojectionState.browserGeometryLoading = false;
+    supersedeGeometryLoad({clearDropState: true});
     if (reprojectionGpuRenderer) {
         await reprojectionGpuRenderer.disposeGeometry();
     }
@@ -1835,6 +1906,15 @@ reprojectionGeometryFile.addEventListener("change", () => {
     loadReprojectionGeometry(reprojectionGeometryFile.files[0]);
 });
 reprojectionClearGeometries.addEventListener("click", clearLoadedGeometries);
+reprojectionLoadLocalPath.addEventListener(
+    "click", loadLocalReprojectionGeometry
+);
+reprojectionLocalPath.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        loadLocalReprojectionGeometry();
+    }
+});
 reprojectionLeftSource.addEventListener("change", () => applyPaneSource("left"));
 reprojectionRightSource.addEventListener("change", () => applyPaneSource("right"));
 [reprojectionGeometryDrop, reprojectionViewer].forEach(target => {
