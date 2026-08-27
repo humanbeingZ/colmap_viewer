@@ -289,8 +289,22 @@ def get_reprojection_render(
     radius: int = 1,
     stream: str = "default",
     geometry: Optional[str] = None,
+    left: Optional[float] = None,
+    right: Optional[float] = None,
+    top: Optional[float] = None,
+    bottom: Optional[float] = None,
+    clip_frame: bool = False,
 ):
     try:
+        region_values = (left, right, top, bottom)
+        if any(value is not None for value in region_values):
+            if any(value is None for value in region_values):
+                raise ValueError("left, right, top, and bottom must be provided together")
+            if right <= left or bottom <= top:
+                raise ValueError("render region must have positive width and height")
+            region = (left, right, top, bottom)
+        else:
+            region = None
         current_geometry = colmap_service.get_geometry_status(stream)
         if geometry and geometry != current_geometry["cache_token"]:
             raise HTTPException(
@@ -301,7 +315,8 @@ def get_reprojection_render(
                 },
             )
         png = colmap_service.get_reprojection_render_png(
-            image_id, max_size, color, radius, request_stream=stream
+            image_id, max_size, color, radius,
+            request_stream=stream, region=region, clip_frame=clip_frame
         )
     except RenderSuperseded:
         # The browser has already moved to a newer camera. Returning no content

@@ -112,6 +112,34 @@ export function zoomViewRegion(
     };
 }
 
+export function imageFrameScissor(image, width, height, region = null) {
+    const outputWidth = Math.max(1, Number(width) || 1);
+    const outputHeight = Math.max(1, Number(height) || 1);
+    const left = Number(region?.left ?? 0);
+    const right = Number(region?.right ?? image.width);
+    const top = Number(region?.top ?? 0);
+    const bottom = Number(region?.bottom ?? image.height);
+    const regionWidth = Math.max(right - left, 1e-6);
+    const regionHeight = Math.max(bottom - top, 1e-6);
+    const clamp = (value, maximum) => Math.max(0, Math.min(maximum, value));
+    const x0 = clamp(Math.floor(-left * outputWidth / regionWidth), outputWidth);
+    const x1 = clamp(
+        Math.ceil((Number(image.width) - left) * outputWidth / regionWidth),
+        outputWidth
+    );
+    const y0 = clamp(Math.floor(-top * outputHeight / regionHeight), outputHeight);
+    const y1 = clamp(
+        Math.ceil((Number(image.height) - top) * outputHeight / regionHeight),
+        outputHeight
+    );
+    return {
+        x: x0,
+        y: y0,
+        width: Math.max(0, x1 - x0),
+        height: Math.max(0, y1 - y0),
+    };
+}
+
 export function relativeViewTransform(renderedView, currentView) {
     const renderedScale = Math.max(Number(renderedView.scale) || 1, 1e-6);
     const scale = (Number(currentView.scale) || 1) / renderedScale;

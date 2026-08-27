@@ -42,13 +42,20 @@ def decode(png):
     return np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
 
 
+def decode_rgba(png):
+    return np.asarray(Image.open(io.BytesIO(png)).convert("RGBA"))
+
+
 class ReprojectionRendererTest(unittest.TestCase):
     def setUp(self):
         self.renderer = ReprojectionRenderer(lambda stream: stream)
         self.image = FakeImage()
         self.camera = FakeCamera()
 
-    def render(self, points, colors, radius=0, color_mode="rgb", token="test"):
+    def render(
+        self, points, colors, radius=0, color_mode="rgb", token="test",
+        region=None, clip_frame=False
+    ):
         return self.renderer.render_png(
             image_id=1,
             image=self.image,
@@ -58,6 +65,8 @@ class ReprojectionRendererTest(unittest.TestCase):
             color_mode=color_mode,
             radius=radius,
             request_stream="viewer",
+            region=region,
+            clip_frame=clip_frame,
         )
 
     def test_nearest_point_wins_at_the_same_pixel(self):
@@ -67,10 +76,31 @@ class ReprojectionRendererTest(unittest.TestCase):
         ))
         np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
 
-    def test_background_matches_meshlab_gradient(self):
-        pixels = decode(self.render([[0, 0, -1]], [[1, 2, 3]], radius=0))
-        np.testing.assert_array_equal(pixels[0, 20], [255, 255, 255])
-        np.testing.assert_array_equal(pixels[-1, 20], [116, 116, 116])
+    def test_background_is_transparent(self):
+        pixels = decode_rgba(self.render(
+            [[0, 0, -1]], [[1, 2, 3]], radius=0
+        ))
+        np.testing.assert_array_equal(pixels[0, 20], [0, 0, 0, 0])
+        np.testing.assert_array_equal(pixels[-1, 20], [0, 0, 0, 0])
+
+    def test_zoomed_out_region_includes_points_outside_image_frame(self):
+        pixels = decode_rgba(self.render(
+            [[-2, 0, 1]],
+            [[12, 34, 56]],
+            radius=0,
+            region=(-160, 480, -160, 480),
+        ))
+        np.testing.assert_array_equal(pixels[160, 60], [12, 34, 56, 255])
+
+    def test_frame_clip_skips_points_outside_image_frame(self):
+        pixels = decode_rgba(self.render(
+            [[-2, 0, 1]],
+            [[12, 34, 56]],
+            radius=0,
+            region=(-160, 480, -160, 480),
+            clip_frame=True,
+        ))
+        np.testing.assert_array_equal(pixels[160, 60], [0, 0, 0, 0])
 
     def test_one_pixel_render_skips_large_splat_buffers(self):
         self.render([[0, 0, 1]], [[12, 34, 56]], radius=0)

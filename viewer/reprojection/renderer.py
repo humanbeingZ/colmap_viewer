@@ -22,7 +22,7 @@ class ReprojectionRenderer:
 
     MIN_PREVIEW_SIZE = 320
     MAX_PREVIEW_SIZE = 4096
-    BACKGROUND_VERSION = "meshlab-gradient-v1"
+    BACKGROUND_VERSION = "transparent-v2"
 
     def __init__(
         self,
@@ -56,7 +56,8 @@ class ReprojectionRenderer:
     @staticmethod
     def _encode_png(array: np.ndarray) -> bytes:
         output = io.BytesIO()
-        Image.fromarray(array, "RGB").save(output, format="PNG", compress_level=2)
+        mode = "RGBA" if array.shape[2] == 4 else "RGB"
+        Image.fromarray(array, mode).save(output, format="PNG", compress_level=2)
         return output.getvalue()
 
     def _cache_get(self, key: tuple) -> Optional[bytes]:
@@ -101,13 +102,9 @@ class ReprojectionRenderer:
         return np.uint8(anchors[left] * (1 - blend) + anchors[right] * blend)
 
     @staticmethod
-    def _background(width: int, height: int) -> np.ndarray:
-        """Return MeshLab's top-white to bottom-gray viewport gradient."""
-        top = np.asarray([255, 255, 255], dtype=np.float32)
-        bottom = np.asarray([116, 116, 116], dtype=np.float32)
-        blend = np.linspace(0, 1, height, dtype=np.float32)[:, None]
-        rows = np.rint(top + (bottom - top) * blend).astype(np.uint8)
-        return np.broadcast_to(rows[:, None, :], (height, width, 3)).copy()
+    def _canvas(width: int, height: int) -> np.ndarray:
+        """Return a transparent canvas for compositing over the viewer background."""
+        return np.zeros((height, width, 4), dtype=np.uint8)
 
     def _get_reprojection_base(
         self,
@@ -119,16 +116,23 @@ class ReprojectionRenderer:
         geometry: GeometryData,
         need_splat_data: bool = False,
         request_stream: str = "default",
+        region: Optional[tuple] = None,
+        clip_frame: bool = False,
     ):
         """Return a one-pixel PNG or its cached depth-aware splat buffers."""
         geometry_token = geometry.cache_token
+        view_region = tuple(float(value) for value in region) if region else (
+            0.0, float(camera.width), 0.0, float(camera.height)
+        )
         cache_key = (
             "render-base", self.BACKGROUND_VERSION,
-            geometry_token, image_id, max_size, color_mode
+            geometry_token, image_id, max_size, color_mode,
+            view_region, clip_frame
         )
         splat_key = (
             self.BACKGROUND_VERSION,
             geometry_token, image_id, max_size, color_mode,
+            view_region, clip_frame,
         )
         cached = self._cache_get(cache_key)
         splat_cached = self._splat_cache_get(splat_key)
@@ -161,6 +165,19 @@ class ReprojectionRenderer:
             # most recently requested camera is allowed to start projection.
             self._check_render_request(request_stream, request_id)
             xyz, rgb = geometry.xyz, geometry.rgb
+            region_left, region_right, region_top, region_bottom = view_region
+            region_scale_x = width / (region_right - region_left)
+            region_scale_y = height / (region_bottom - region_top)
+            projection_left = max(region_left, 0.0) if clip_frame else region_left
+            projection_right = (
+                min(region_right, float(camera.width))
+                if clip_frame else region_right
+            )
+            projection_top = max(region_top, 0.0) if clip_frame else region_top
+            projection_bottom = (
+                min(region_bottom, float(camera.height))
+                if clip_frame else region_bottom
+            )
             pose_accessor = image.cam_from_world
             pose = pose_accessor() if callable(pose_accessor) else pose_accessor
             matrix = np.asarray(pose.matrix(), dtype=np.float32)
@@ -171,7 +188,9 @@ class ReprojectionRenderer:
             # Exact pre-projection frustum test for the pinhole models. This
             # avoids running camera projection for off-screen positive-depth
             # points (all cameras in the current dataset are PINHOLE).
-            if is_pinhole:
+            if projection_right <= projection_left or projection_bottom <= projection_top:
+                visible = np.zeros_like(z, dtype=bool)
+            elif is_pinhole:
                 if camera.model_name == "PINHOLE":
                     fx, fy, cx, cy = camera.params
                 else:
@@ -179,10 +198,10 @@ class ReprojectionRenderer:
                     fy = fx
                 # Match the final preview-pixel bounds exactly so no second
                 # in-frame filtering/copy is needed after projection.
-                left = ((-0.5 / scale) - cx) / fx
-                right = (((width - 0.5) / scale) - cx) / fx
-                top = ((-0.5 / scale) - cy) / fy
-                bottom = (((height - 0.5) / scale) - cy) / fy
+                left = ((projection_left - 0.5 / region_scale_x) - cx) / fx
+                right = ((projection_right - 0.5 / region_scale_x) - cx) / fx
+                top = ((projection_top - 0.5 / region_scale_y) - cy) / fy
+                bottom = ((projection_bottom - 0.5 / region_scale_y) - cy) / fy
                 visible = ne.evaluate(
                     "(z > 1e-6) & (x >= left*z) & (x < right*z) "
                     "& (y >= top*z) & (y < bottom*z)",
@@ -201,29 +220,31 @@ class ReprojectionRenderer:
             xyz_camera = xyz_camera[visible]
             colors = rgb[visible]
 
-            canvas = self._background(width, height)
+            canvas = self._canvas(width, height)
             zbuffer = np.full(height * width, np.inf, dtype=np.float32)
             if len(xyz_camera):
                 if is_pinhole:
                     depth = xyz_camera[:, 2]
                     u = ne.evaluate(
-                        "(f*x/depth + c)*scale",
+                        "(f*x/depth + c - offset)*output_scale",
                         local_dict={
                             "f": fx,
                             "x": xyz_camera[:, 0],
                             "depth": depth,
                             "c": cx,
-                            "scale": scale,
+                            "offset": region_left,
+                            "output_scale": region_scale_x,
                         },
                     )
                     v = ne.evaluate(
-                        "(f*y/depth + c)*scale",
+                        "(f*y/depth + c - offset)*output_scale",
                         local_dict={
                             "f": fy,
                             "y": xyz_camera[:, 1],
                             "depth": depth,
                             "c": cy,
-                            "scale": scale,
+                            "offset": region_top,
+                            "output_scale": region_scale_y,
                         },
                     )
                     x = np.rint(u).astype(np.int64, copy=False)
@@ -234,7 +255,19 @@ class ReprojectionRenderer:
                     np.clip(y, 0, height - 1, out=y)
                 else:
                     # pycolmap handles arbitrary distorted/fisheye models.
-                    uv = np.asarray(camera.img_from_cam(xyz_camera), dtype=np.float32) * scale
+                    uv = np.asarray(
+                        camera.img_from_cam(xyz_camera), dtype=np.float32
+                    )
+                    if clip_frame:
+                        in_frame = (
+                            (uv[:, 0] >= 0) & (uv[:, 0] < camera.width)
+                            & (uv[:, 1] >= 0) & (uv[:, 1] < camera.height)
+                        )
+                        uv = uv[in_frame]
+                        xyz_camera = xyz_camera[in_frame]
+                        colors = colors[in_frame]
+                    uv[:, 0] = (uv[:, 0] - region_left) * region_scale_x
+                    uv[:, 1] = (uv[:, 1] - region_top) * region_scale_y
                     finite = np.isfinite(uv).all(axis=1)
                     uv, xyz_camera, colors = uv[finite], xyz_camera[finite], colors[finite]
                     x = np.rint(uv[:, 0]).astype(np.int64, copy=False)
@@ -254,7 +287,9 @@ class ReprojectionRenderer:
                         colors = self._depth_colors(depth)
                     elif color_mode == "white":
                         colors = np.full_like(colors, 255)
-                    canvas.reshape(-1, 3)[pixel] = colors
+                    flat_canvas = canvas.reshape(-1, 4)
+                    flat_canvas[pixel, :3] = colors
+                    flat_canvas[pixel, 3] = 255
 
             self._check_render_request(request_stream, request_id)
             if not need_splat_data:
@@ -304,6 +339,8 @@ class ReprojectionRenderer:
         color_mode: str = "rgb",
         radius: int = 1,
         request_stream: str = "default",
+        region: Optional[tuple] = None,
+        clip_frame: bool = False,
     ) -> bytes:
         """Project every point, reusing projection when only size changes."""
         if color_mode not in {"rgb", "depth", "white"}:
@@ -315,6 +352,8 @@ class ReprojectionRenderer:
         cache_key = (
             "render-sized", self.BACKGROUND_VERSION, geometry_token,
             image_id, max_size, color_mode, radius,
+            tuple(float(value) for value in region) if region else None,
+            clip_frame,
         )
         if radius > 0:
             cached = self._cache_get(cache_key)
@@ -330,6 +369,8 @@ class ReprojectionRenderer:
             geometry,
             need_splat_data=radius > 0,
             request_stream=request_stream,
+            region=region,
+            clip_frame=clip_frame,
         )
         if radius == 0:
             return base
@@ -349,6 +390,6 @@ class ReprojectionRenderer:
         ).reshape(-1)
         valid = winners < sentinel
         winner_pixels = winners[valid].astype(np.int64) % source_modulus
-        canvas = self._background(base_color.shape[1], base_color.shape[0])
-        canvas.reshape(-1, 3)[valid] = base_color.reshape(-1, 3)[winner_pixels]
+        canvas = self._canvas(base_color.shape[1], base_color.shape[0])
+        canvas.reshape(-1, 4)[valid] = base_color.reshape(-1, 4)[winner_pixels]
         return self._cache_put(cache_key, self._encode_png(canvas))

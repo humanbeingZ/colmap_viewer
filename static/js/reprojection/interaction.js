@@ -12,6 +12,7 @@
             state,
             splitGeometry,
             applyViewTransform,
+            applySplitRender = () => {},
         }) {
             this.viewer = viewer;
             this.splitElement = splitElement;
@@ -22,6 +23,7 @@
             this.state = state;
             this.splitGeometry = splitGeometry;
             this.applyViewTransform = applyViewTransform;
+            this.applySplitRender = applySplitRender;
             this.pointerMode = null;
             this.pointerId = null;
             this.pointerLastX = 0;
@@ -53,6 +55,7 @@
             this.divider.style.width = `${split.lineLength}px`;
             this.divider.style.transform =
                 `translate(-50%, -50%) rotate(${split.lineAngle}deg)`;
+            this.applySplitRender(split);
         }
 
         resize(width, height) {

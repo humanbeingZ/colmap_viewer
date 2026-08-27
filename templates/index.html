@@ -78,12 +78,11 @@
 
             <div id="reprojection-controls" hidden>
                 <div class="image-selection">
-                    <label for="reprojection-image-select">Registered image:</label>
+                    <label for="reprojection-image-select" class="image-selection-label">
+                        <span>Registered image:</span>
+                        <span class="image-navigation-keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></span>
+                    </label>
                     <select id="reprojection-image-select"></select>
-                    <div class="reprojection-navigation">
-                        <button id="reprojection-prev" title="Previous image">&#9664; Previous</button>
-                        <button id="reprojection-next" title="Next image">Next &#9654;</button>
-                    </div>
                 </div>
                 <div class="display-options reprojection-options">
                     <div class="reprojection-reset-actions">
@@ -96,12 +95,41 @@
                             Reset divider
                         </button>
                     </div>
+                    <div class="reprojection-primary-options">
+                        <div id="reprojection-mesh-color-field"
+                             class="reprojection-field reprojection-inline-field" hidden>
+                            <label for="reprojection-mesh-color">Mesh colors:</label>
+                            <select id="reprojection-mesh-color">
+                                <option value="vertex">Vertex colors</option>
+                                <option value="solid" selected>Solid gray</option>
+                            </select>
+                        </div>
+                        <div class="reprojection-field">
+                            <label class="reprojection-checkbox">
+                                <input id="reprojection-show-outside-frame" type="checkbox">
+                                Show geometry outside image frame
+                            </label>
+                        </div>
+                    </div>
                 </div>
 
                 <details class="reprojection-disclosure">
-                    <summary>Advanced comparison</summary>
+                    <summary>Comparison</summary>
                     <div class="reprojection-disclosure-content">
                         <div class="reprojection-option-grid">
+                            <div class="reprojection-field">
+                                <label for="reprojection-left-source">Left pane <kbd>t</kbd></label>
+                                <select id="reprojection-left-source">
+                                    <option value="colmap">COLMAP points</option>
+                                </select>
+                            </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-right-source">Right pane <kbd>y</kbd></label>
+                                <select id="reprojection-right-source">
+                                    <option value="image">Camera image</option>
+                                    <option value="colmap">COLMAP points</option>
+                                </select>
+                            </div>
                             <div class="reprojection-field">
                                 <label for="reprojection-layout">Layout</label>
                                 <select id="reprojection-layout">
@@ -109,6 +137,32 @@
                                     <option value="side">Side by side</option>
                                 </select>
                             </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-split-angle">Divider angle</label>
+                                <div class="reprojection-angle-control">
+                                    <input id="reprojection-split-angle" type="number"
+                                           value="0" min="-180" max="180" step="1">
+                                    <span>&deg;</span>
+                                </div>
+                            </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-flip">Input orientation</label>
+                                <select id="reprojection-flip">
+                                    <option value="none">Unchanged</option>
+                                    <option value="horizontal">Flip horizontal</option>
+                                    <option value="vertical">Flip vertical</option>
+                                    <option value="both">Rotate 180&deg;</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="reprojection-hint">Ctrl + drag rotates the divider</div>
+                    </div>
+                </details>
+
+                <details class="reprojection-disclosure">
+                    <summary>Appearance</summary>
+                    <div class="reprojection-disclosure-content">
+                        <div class="reprojection-option-grid">
                             <div class="reprojection-field">
                                 <label for="reprojection-color">Point color</label>
                                 <select id="reprojection-color">
@@ -131,13 +185,6 @@
                                 <select id="reprojection-mesh-shading">
                                     <option value="face">Face normals</option>
                                     <option value="none">None</option>
-                                </select>
-                            </div>
-                            <div class="reprojection-field">
-                                <label for="reprojection-mesh-color">Mesh color</label>
-                                <select id="reprojection-mesh-color">
-                                    <option value="vertex">Vertex colors</option>
-                                    <option value="solid">Solid gray</option>
                                 </select>
                             </div>
                             <div class="reprojection-field">
@@ -167,25 +214,7 @@
                                     </label>
                                 </div>
                             </div>
-                            <div class="reprojection-field">
-                                <label for="reprojection-split-angle">Divider angle</label>
-                                <div class="reprojection-angle-control">
-                                    <input id="reprojection-split-angle" type="number"
-                                           value="0" min="-180" max="180" step="1">
-                                    <span>&deg;</span>
-                                </div>
-                            </div>
-                            <div class="reprojection-field">
-                                <label for="reprojection-flip">Input orientation</label>
-                                <select id="reprojection-flip">
-                                    <option value="none">Unchanged</option>
-                                    <option value="horizontal">Flip horizontal</option>
-                                    <option value="vertical">Flip vertical</option>
-                                    <option value="both">Rotate 180&deg;</option>
-                                </select>
-                            </div>
                         </div>
-                        <div class="reprojection-hint">Ctrl + drag rotates the divider</div>
                     </div>
                 </details>
 
@@ -206,8 +235,8 @@
                         <div id="reprojection-geometry-status" class="geometry-status">
                             COLMAP points3D
                         </div>
-                        <button id="reprojection-use-colmap" type="button">
-                            Use COLMAP points3D
+                        <button id="reprojection-clear-geometries" type="button">
+                            Clear loaded geometries
                         </button>
                     </div>
                 </details>
@@ -257,6 +286,7 @@
     <script src="/static/js/shared/viewer_stream.js"></script>
     <script src="/static/js/reprojection/api.js"></script>
     <script src="/static/js/reprojection/split.js"></script>
+    <script src="/static/js/reprojection/pane_sources.js"></script>
     <script src="/static/js/reprojection/point_size.js"></script>
     <script src="/static/js/reprojection/interaction.js"></script>
     <script src="/static/js/reprojection/point_request.js"></script>

@@ -3,6 +3,7 @@ import {PerspectiveCamera, Vector3} from "three";
 import {
     depthRangeForSphere,
     detectPlyKind,
+    imageFrameScissor,
     projectionFrustum,
     relativeViewTransform,
     screenRenderSize,
@@ -74,6 +75,18 @@ assert.deepEqual(screenRenderSize(800, 600, 0.5), {
 assert.deepEqual(zoomViewRegion(
     {width: 1000, height: 500}, 1000, 500, 2, -500, -250
 ), {left: 250, right: 750, top: 125, bottom: 375});
+assert.deepEqual(imageFrameScissor(
+    {width: 1000, height: 500},
+    1000,
+    500,
+    {left: -500, right: 1500, top: -250, bottom: 750}
+), {x: 250, y: 125, width: 500, height: 250});
+assert.deepEqual(imageFrameScissor(
+    {width: 1000, height: 500},
+    1000,
+    500,
+    {left: 250, right: 750, top: 125, bottom: 375}
+), {x: 0, y: 0, width: 1000, height: 500});
 assert.deepEqual(relativeViewTransform(
     {scale: 2, translateX: -500, translateY: -250},
     {scale: 3, translateX: -900, translateY: -400}

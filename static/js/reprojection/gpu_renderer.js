@@ -6,6 +6,7 @@ import {
     Fn,
     normalView,
     sRGBTransferEOTF,
+    texture,
     uniform,
     vec3,
     vec4,
@@ -16,6 +17,7 @@ import {
 import {
     depthRangeForSphere,
     detectPlyKind,
+    imageFrameScissor,
     isPinholeCamera,
     projectionFrustum,
     relativeViewTransform,
@@ -87,28 +89,31 @@ export class ReprojectionGpuRenderer {
     constructor(canvas) {
         this.canvas = canvas;
         this.scene = new THREE.Scene();
-        // Match MeshLab's viewport gradient in screen space. viewportUV uses
-        // WebGPU coordinates, whose y axis runs from top (0) to bottom (1).
-        this.backgroundTopNode = uniform(new THREE.Color(0xffffff));
-        this.backgroundBottomNode = uniform(new THREE.Color(0x747474));
-        this.scene.backgroundNode = viewportUV.y.mix(
-            this.backgroundTopNode, this.backgroundBottomNode
-        );
         this.camera = new THREE.PerspectiveCamera();
         this.camera.matrixAutoUpdate = false;
         this.camera.matrixWorldAutoUpdate = false;
         this.meshFrustum = new THREE.Frustum();
         this.projectionViewMatrix = new THREE.Matrix4();
         this.chunkWorldBounds = new THREE.Box3();
+        this.geometries = new Map();
+        this.activeKey = null;
+        this._nextId = 0;
         this.object = null;
         this.kind = null;
+        this.pointSize = 1;
         this.meshShading = DEFAULT_MESH_SHADING;
         this.meshColor = DEFAULT_MESH_COLOR;
         this.meshBrightness = DEFAULT_MESH_BRIGHTNESS;
         this.meshBrightnessNode = uniform(this.meshBrightness);
+        this.comparisonWidthNode = uniform(1);
+        this.comparisonHeightNode = uniform(1);
+        this.comparisonNormalXNode = uniform(1);
+        this.comparisonNormalYNode = uniform(0);
+        this.comparisonThresholdNode = uniform(0.5);
         this.renderer = new THREE.WebGPURenderer({
             canvas,
             antialias: true,
+            alpha: true,
             reversedDepthBuffer: true,
             // The viewer displays ordinary 8-bit imagery. Avoid a half-float
             // color target whose memory cost becomes excessive when zoom
@@ -116,6 +121,43 @@ export class ReprojectionGpuRenderer {
             outputBufferType: THREE.UnsignedByteType,
         });
         this.ready = this.renderer.init();
+        this._operationQueue = Promise.resolve();
+    }
+
+    runGpuOperation(operation) {
+        const result = this._operationQueue.then(operation, operation);
+        this._operationQueue = result.catch(() => {});
+        return result;
+    }
+
+    ensureComparisonTargets(width, height) {
+        if (!this._comparisonLeftTarget) {
+            this._comparisonLeftTarget = new THREE.RenderTarget(width, height);
+            this._comparisonRightTarget = new THREE.RenderTarget(width, height);
+            const leftColor = texture(
+                this._comparisonLeftTarget.texture, viewportUV
+            );
+            const rightColor = texture(
+                this._comparisonRightTarget.texture, viewportUV
+            );
+            const projection = viewportUV.x.mul(this.comparisonWidthNode)
+                .mul(this.comparisonNormalXNode)
+                .add(
+                    viewportUV.y.mul(this.comparisonHeightNode)
+                        .mul(this.comparisonNormalYNode)
+                );
+            const material = new THREE.NodeMaterial();
+            material.fragmentNode = projection
+                .greaterThanEqual(this.comparisonThresholdNode)
+                .select(rightColor, leftColor);
+            material.depthTest = false;
+            material.depthWrite = false;
+            this._comparisonQuad = new THREE.QuadMesh(material);
+        } else if (this._comparisonLeftTarget.width !== width
+                || this._comparisonLeftTarget.height !== height) {
+            this._comparisonLeftTarget.setSize(width, height);
+            this._comparisonRightTarget.setSize(width, height);
+        }
     }
 
     createMeshMaterial(hasVertexColors) {
@@ -239,7 +281,12 @@ export class ReprojectionGpuRenderer {
                 if (!isCurrent()) {
                     return;
                 }
-                await this.renderer.compileAsync(mesh, this.camera, this.scene);
+                await this.runGpuOperation(() => {
+                    this.configureCamera(image);
+                    return this.renderer.compileAsync(
+                        mesh, this.camera, this.scene
+                    );
+                });
                 completed += 1;
                 onProgress(completed, manifest.chunk_count);
             });
@@ -306,10 +353,11 @@ export class ReprojectionGpuRenderer {
         const bounds = new THREE.Box3();
         chunks.forEach(chunk => bounds.union(chunk.geometry.boundingBox));
         group.userData.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
-        this.installObject(group, "triangle mesh");
+        const key = this.installObject(group, "triangle mesh");
         return {
             kind: "triangle mesh",
             count: manifest.vertex_count,
+            key,
         };
     }
 
@@ -353,7 +401,7 @@ export class ReprojectionGpuRenderer {
                     new THREE.PointsMaterial({
                         color: geometry.getAttribute("color") ? 0xffffff : 0xb0b0b0,
                         vertexColors: Boolean(geometry.getAttribute("color")),
-                        size: 1,
+                        size: this.pointSize,
                         sizeAttenuation: false,
                     })
                 );
@@ -364,21 +412,79 @@ export class ReprojectionGpuRenderer {
             disposeObject(object);
             return null;
         }
-        this.installObject(object, kind);
+        const key = this.installObject(object, kind);
         return {
             kind,
             count: geometry.getAttribute("position")?.count || 0,
+            key,
         };
     }
 
     installObject(object, kind) {
-        const previous = this.object;
+        const key = String(this._nextId++);
+        object.visible = false;
         this.scene.add(object);
-        this.object = object;
-        this.kind = kind;
-        if (previous) {
-            this.scene.remove(previous);
-            disposeObject(previous);
+        this.geometries.set(key, {object, kind});
+        this.activateGeometry(key);
+        return key;
+    }
+
+    activateGeometry(key) {
+        if (this.activeKey === key) {
+            return;
+        }
+        const prev = this.geometries.get(this.activeKey);
+        if (prev) {
+            prev.object.visible = false;
+        }
+        const entry = this.geometries.get(key);
+        if (entry) {
+            entry.object.visible = true;
+            this.object = entry.object;
+            this.kind = entry.kind;
+        } else {
+            this.object = null;
+            this.kind = null;
+        }
+        this.activeKey = key;
+    }
+
+    getActiveKey() {
+        return this.activeKey;
+    }
+
+    getGeometryKeys() {
+        return [...this.geometries.keys()];
+    }
+
+    prepareGeometry(key, image, isCurrent = () => true) {
+        return this.runGpuOperation(
+            () => this._prepareGeometry(key, image, isCurrent)
+        );
+    }
+
+    async _prepareGeometry(key, image, isCurrent) {
+        const entry = this.geometries.get(key);
+        if (!entry || !this.supportsCamera(image)) {
+            return false;
+        }
+        await this.ready;
+        if (!isCurrent()) {
+            return false;
+        }
+        const previousKey = this.activeKey;
+        this.activateGeometry(key);
+        try {
+            this.configureCamera(image);
+            this.cullMeshChunks();
+            await this.renderer.compileAsync(
+                entry.object, this.camera, this.scene
+            );
+            return isCurrent();
+        } finally {
+            if (previousKey !== key && this.geometries.has(previousKey)) {
+                this.activateGeometry(previousKey);
+            }
         }
     }
 
@@ -447,7 +553,48 @@ export class ReprojectionGpuRenderer {
         });
     }
 
-    async render(image, width, height, region = null) {
+    configureFrameScissor(image, width, height, region, enabled, target = null) {
+        if (!enabled) {
+            this.renderer.setScissorTest(false);
+            return;
+        }
+        const scissor = imageFrameScissor(image, width, height, region);
+        if (target) {
+            target.scissor.set(
+                scissor.x, scissor.y, scissor.width, scissor.height
+            );
+            target.scissorTest = true;
+        } else {
+            this.renderer.setScissor(
+                scissor.x, scissor.y, scissor.width, scissor.height
+            );
+        }
+        this.renderer.setScissorTest(true);
+    }
+
+    render(image, width, height, region = null, clipFrame = false) {
+        return this.runGpuOperation(
+            () => this._render(image, width, height, region, clipFrame)
+        );
+    }
+
+    renderGeometry(
+        key, image, width, height, region = null, clipFrame = false
+    ) {
+        return this.runGpuOperation(async () => {
+            const previousKey = this.activeKey;
+            this.activateGeometry(key);
+            try {
+                await this._render(image, width, height, region, clipFrame);
+            } finally {
+                if (previousKey !== key && this.geometries.has(previousKey)) {
+                    this.activateGeometry(previousKey);
+                }
+            }
+        });
+    }
+
+    async _render(image, width, height, region, clipFrame) {
         if (!this.object) {
             return;
         }
@@ -460,7 +607,14 @@ export class ReprojectionGpuRenderer {
         this.configureCamera(image, region);
         this.cullMeshChunks();
         this.renderer.setSize(width, height, false);
-        this.renderer.render(this.scene, this.camera);
+        this.configureFrameScissor(
+            image, width, height, region, clipFrame
+        );
+        try {
+            this.renderer.render(this.scene, this.camera);
+        } finally {
+            this.renderer.setScissorTest(false);
+        }
         // WebGPURenderer.render() only submits commands. Keep the preceding
         // transformed frame visible until the new cropped frame is actually
         // complete; otherwise the frontend changes coordinate systems while
@@ -471,43 +625,126 @@ export class ReprojectionGpuRenderer {
         }
     }
 
-    setPointSize(size) {
-        if (this.kind === "point cloud" && this.object?.material) {
-            this.object.material.size = Number(size);
-            this.object.material.needsUpdate = true;
+    renderGeometryTarget(key, target, image, width, height, region, clipFrame) {
+        this.activateGeometry(key);
+        this.configureCamera(image, region);
+        this.cullMeshChunks();
+        this.renderer.setRenderTarget(target);
+        this.configureFrameScissor(
+            image, width, height, region, clipFrame, target
+        );
+        this.renderer.render(this.scene, this.camera);
+        this.renderer.setScissorTest(false);
+        target.scissorTest = false;
+    }
+
+    compositeComparison(width, height, split) {
+        if (!this._comparisonQuad) {
+            return;
+        }
+        this.comparisonWidthNode.value = split.width;
+        this.comparisonHeightNode.value = split.height;
+        this.comparisonNormalXNode.value = split.normalX;
+        this.comparisonNormalYNode.value = split.normalY;
+        this.comparisonThresholdNode.value = split.threshold;
+        this.renderer.setRenderTarget(null);
+        this.renderer.setSize(width, height, false);
+        this.renderer.setScissorTest(false);
+        this._comparisonQuad.render(this.renderer);
+    }
+
+    updateComparisonSplit(width, height, split) {
+        return this.runGpuOperation(
+            () => this.compositeComparison(width, height, split)
+        );
+    }
+
+    hasComparison(leftKey, rightKey) {
+        return this.comparisonKeys?.[0] === leftKey
+            && this.comparisonKeys?.[1] === rightKey;
+    }
+
+    renderComparison(
+        leftKey, rightKey, image, width, height, region, split,
+        clipFrame = false
+    ) {
+        return this.runGpuOperation(() => this._renderComparison(
+            leftKey, rightKey, image, width, height, region, split, clipFrame
+        ));
+    }
+
+    async _renderComparison(
+        leftKey, rightKey, image, width, height, region, split, clipFrame
+    ) {
+        if (!this.geometries.has(leftKey) || !this.geometries.has(rightKey)) {
+            return;
+        }
+        await this.ready;
+        this.ensureComparisonTargets(width, height);
+        const previousKey = this.activeKey;
+        const previousTarget = this.renderer.getRenderTarget();
+        try {
+            this.renderGeometryTarget(
+                leftKey, this._comparisonLeftTarget,
+                image, width, height, region, clipFrame
+            );
+            this.renderGeometryTarget(
+                rightKey, this._comparisonRightTarget,
+                image, width, height, region, clipFrame
+            );
+            this.comparisonKeys = [leftKey, rightKey];
+            this.compositeComparison(width, height, split);
+            const gpuQueue = this.renderer.backend?.device?.queue;
+            if (gpuQueue?.onSubmittedWorkDone) {
+                await gpuQueue.onSubmittedWorkDone();
+            }
+        } finally {
+            this.renderer.setScissorTest(false);
+            this.renderer.setRenderTarget(previousTarget);
+            if (previousKey !== this.activeKey
+                    && this.geometries.has(previousKey)) {
+                this.activateGeometry(previousKey);
+            }
         }
     }
 
-    setBackgroundColors(top, bottom) {
-        this.backgroundTopNode.value.set(top);
-        this.backgroundBottomNode.value.set(bottom);
+    setPointSize(size) {
+        this.pointSize = Number(size);
+        for (const [, entry] of this.geometries) {
+            if (entry.kind === "point cloud" && entry.object?.material) {
+                entry.object.material.size = this.pointSize;
+                entry.object.material.needsUpdate = true;
+            }
+        }
     }
 
     updateMeshMaterial() {
-        if (this.kind !== "triangle mesh" || !this.object) {
-            return;
-        }
-        const meshes = [];
-        const previousMaterials = new Set();
-        this.object.traverse(node => {
-            if (node.isMesh && node.geometry) {
-                meshes.push(node);
-                if (node.material) {
-                    previousMaterials.add(node.material);
-                }
+        for (const [, entry] of this.geometries) {
+            if (entry.kind !== "triangle mesh" || !entry.object) {
+                continue;
             }
-        });
-        if (!meshes.length) {
-            return;
+            const meshes = [];
+            const previousMaterials = new Set();
+            entry.object.traverse(node => {
+                if (node.isMesh && node.geometry) {
+                    meshes.push(node);
+                    if (node.material) {
+                        previousMaterials.add(node.material);
+                    }
+                }
+            });
+            if (!meshes.length) {
+                continue;
+            }
+            const hasVertexColors = meshes.some(
+                mesh => Boolean(mesh.geometry.getAttribute("color"))
+            );
+            const material = this.createMeshMaterial(hasVertexColors);
+            meshes.forEach(mesh => {
+                mesh.material = material;
+            });
+            previousMaterials.forEach(previous => previous.dispose());
         }
-        const hasVertexColors = meshes.some(
-            mesh => Boolean(mesh.geometry.getAttribute("color"))
-        );
-        const material = this.createMeshMaterial(hasVertexColors);
-        meshes.forEach(mesh => {
-            mesh.material = material;
-        });
-        previousMaterials.forEach(previous => previous.dispose());
     }
 
     setMeshShading(value) {
@@ -526,20 +763,129 @@ export class ReprojectionGpuRenderer {
         return this.meshBrightness;
     }
 
-    disposeGeometry() {
-        if (!this.object) {
+    renderWithGeometry(key, image, width, height, region = null) {
+        return this.renderGeometry(key, image, width, height, region);
+    }
+
+    captureGeometry(
+        key, image, width, height, region = null, clipFrame = false
+    ) {
+        return this.runGpuOperation(() => this._captureGeometry(
+            key, image, width, height, region, clipFrame
+        ));
+    }
+
+    async _captureGeometry(
+        key, image, width, height, region, clipFrame
+    ) {
+        const entry = this.geometries.get(key);
+        if (!entry) {
+            return null;
+        }
+        const previousKey = this.activeKey;
+        this.activateGeometry(key);
+        try {
+            await this.ready;
+            this.configureCamera(image, region);
+            this.cullMeshChunks();
+            if (!this._captureTarget
+                    || this._captureTarget.width !== width
+                    || this._captureTarget.height !== height) {
+                if (this._captureTarget) {
+                    this._captureTarget.dispose();
+                }
+                this._captureTarget = new THREE.RenderTarget(width, height);
+            }
+            const previousRenderTarget = this.renderer.getRenderTarget();
+            const previousOutputTarget = this.renderer.getOutputRenderTarget();
+            let buffer;
+            try {
+                // A normal canvas render applies the renderer's sRGB output
+                // conversion. Mark the capture target as output too so its
+                // bytes have identical color and shading when shown as an image.
+                this.renderer.setOutputRenderTarget(this._captureTarget);
+                this.renderer.setRenderTarget(this._captureTarget);
+                this.configureFrameScissor(
+                    image, width, height, region, clipFrame, this._captureTarget
+                );
+                this.renderer.render(this.scene, this.camera);
+                buffer = await this.renderer.readRenderTargetPixelsAsync(
+                    this._captureTarget, 0, 0, width, height
+                );
+            } finally {
+                this.renderer.setScissorTest(false);
+                this._captureTarget.scissorTest = false;
+                this.renderer.setRenderTarget(previousRenderTarget);
+                this.renderer.setOutputRenderTarget(previousOutputTarget);
+            }
+            const src = new Uint8ClampedArray(buffer.buffer);
+            const flipped = new Uint8ClampedArray(src.length);
+            const rowSize = width * 4;
+            for (let y = 0; y < height; y++) {
+                const srcOffset = (height - 1 - y) * rowSize;
+                const dstOffset = y * rowSize;
+                flipped.set(src.subarray(srcOffset, srcOffset + rowSize),
+                    dstOffset);
+            }
+            const imageData = new ImageData(flipped, width, height);
+            if (!this._captureCanvas) {
+                this._captureCanvas = document.createElement("canvas");
+                this._captureCtx = this._captureCanvas.getContext("2d",
+                    {alpha: true});
+            }
+            this._captureCanvas.width = width;
+            this._captureCanvas.height = height;
+            this._captureCtx.putImageData(imageData, 0, 0);
+            return new Promise(resolve =>
+                this._captureCanvas.toBlob(resolve, "image/png")
+            );
+        } finally {
+            if (previousKey !== key && this.geometries.has(previousKey)) {
+                this.activateGeometry(previousKey);
+            }
+        }
+    }
+
+    disposeGeometry(key = undefined) {
+        return this.runGpuOperation(() => this._disposeGeometry(key));
+    }
+
+    _disposeGeometry(key) {
+        if (key === undefined) {
+            for (const [, entry] of this.geometries) {
+                this.scene.remove(entry.object);
+                disposeObject(entry.object);
+            }
+            this.geometries.clear();
+            this.object = null;
+            this.kind = null;
+            this.activeKey = null;
             return;
         }
-        this.scene.remove(this.object);
-        disposeObject(this.object);
-        this.object = null;
-        this.kind = null;
+        const entry = this.geometries.get(key);
+        if (!entry) {
+            return;
+        }
+        this.scene.remove(entry.object);
+        disposeObject(entry.object);
+        this.geometries.delete(key);
+        if (this.activeKey === key) {
+            const remaining = [...this.geometries.keys()];
+            if (remaining.length) {
+                this.activateGeometry(remaining[remaining.length - 1]);
+            } else {
+                this.object = null;
+                this.kind = null;
+                this.activeKey = null;
+            }
+        }
     }
 }
 
 export {
     depthRangeForSphere,
     detectPlyKind,
+    imageFrameScissor,
     isPinholeCamera,
     projectionFrustum,
     relativeViewTransform,

@@ -1,5 +1,5 @@
 export const DEFAULT_MESH_SHADING = "face";
-export const DEFAULT_MESH_COLOR = "vertex";
+export const DEFAULT_MESH_COLOR = "solid";
 export const DEFAULT_MESH_BRIGHTNESS = 1;
 
 const SHADING_MODES = new Set(["face", "none"]);

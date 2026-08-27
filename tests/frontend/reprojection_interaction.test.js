@@ -27,6 +27,7 @@ const state = {
     viewTranslateY: 0,
 };
 let viewUpdates = 0;
+let splitRenderUpdates = 0;
 const interaction = new ReprojectionInteraction({
     viewer,
     splitElement,
@@ -39,6 +40,9 @@ const interaction = new ReprojectionInteraction({
     applyViewTransform: () => {
         viewUpdates += 1;
     },
+    applySplitRender: () => {
+        splitRenderUpdates += 1;
+    },
 });
 interaction.attach();
 
@@ -46,6 +50,7 @@ assert.strictEqual(interaction.resize(240, 120), true);
 assert.strictEqual(interaction.resize(240, 120), false);
 assert.strictEqual(splitElement.style.width, "240px");
 assert.strictEqual(splitElement.style.height, "120px");
+assert.strictEqual(splitRenderUpdates, 1);
 
 function pointer(overrides) {
     return {
@@ -75,5 +80,6 @@ assert.strictEqual(viewUpdates, 1);
 interaction.resetDivider();
 assert.strictEqual(state.splitPercent, 50);
 assert.strictEqual(state.splitAngle, 0);
+assert.ok(splitRenderUpdates > 1);
 
 console.log("reprojection interaction tests passed");

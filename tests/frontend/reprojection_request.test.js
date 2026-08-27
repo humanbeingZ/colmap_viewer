@@ -28,12 +28,19 @@ let source = null;
 let transforms = 0;
 let failures = 0;
 let renderCount = 0;
+let appliedView = null;
+const capturedView = {scale: 0.5, translateX: 20, translateY: 10};
 const requester = new ReprojectionPointRequester({
     state,
-    renderUrl: () => `render-${++renderCount}`,
+    renderUrl: (_image, view) => {
+        assert.deepStrictEqual(view, capturedView);
+        return `render-${++renderCount}`;
+    },
+    captureView: () => ({...capturedView}),
     createImage: () => new TestImage(),
-    applySource: url => {
+    applySource: (url, view) => {
         source = url;
+        appliedView = view;
     },
     applyViewTransform: () => {
         transforms += 1;
@@ -54,6 +61,7 @@ const requester = new ReprojectionPointRequester({
 
     loaders[1].onload();
     assert.strictEqual(source, "render-2");
+    assert.deepStrictEqual(appliedView, capturedView);
     assert.strictEqual(transforms, 1);
 
     requester.request();

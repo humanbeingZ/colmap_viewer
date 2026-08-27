@@ -467,6 +467,8 @@ class ColmapService:
         color_mode: str = "rgb",
         radius: int = 1,
         request_stream: str = "default",
+        region: Optional[tuple] = None,
+        clip_frame: bool = False,
     ) -> bytes:
         """Render the selected geometry through a reconstruction camera."""
         geometry = self._geometry_for_stream(request_stream)
@@ -480,6 +482,8 @@ class ColmapService:
             color_mode=color_mode,
             radius=radius,
             request_stream=request_stream,
+            region=region,
+            clip_frame=clip_frame,
         )
 
     def _get_images_from_recon(self) -> List[Dict[str, Any]]:

@@ -5,6 +5,7 @@
         constructor({
             state,
             renderUrl,
+            captureView = () => null,
             applySource,
             applyViewTransform,
             recoverGeometry,
@@ -13,6 +14,7 @@
         }) {
             this.state = state;
             this.renderUrl = renderUrl;
+            this.captureView = captureView;
             this.applySource = applySource;
             this.applyViewTransform = applyViewTransform;
             this.recoverGeometry = recoverGeometry;
@@ -32,13 +34,14 @@
             }
             const image = this.state.images[this.state.currentIndex];
             const pointGeneration = ++this.state.pointGeneration;
-            const url = this.renderUrl(image);
+            const renderedView = this.captureView();
+            const url = this.renderUrl(image, renderedView);
             const loader = this.createImage();
             loader.onload = () => {
                 if (!this.isCurrent(frameGeneration, pointGeneration)) {
                     return;
                 }
-                this.applySource(url);
+                this.applySource(url, renderedView);
                 this.applyViewTransform();
             };
             loader.onerror = async () => {

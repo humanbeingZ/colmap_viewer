@@ -1,21 +1,3 @@
-.reprojection-navigation {
-    display: flex;
-    gap: 8px;
-}
-
-.reprojection-navigation button {
-    flex: 1;
-    padding: 8px 4px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    background: #f7f7f7;
-    cursor: pointer;
-}
-
-.reprojection-navigation button:hover {
-    background: #e8e8e8;
-}
-
 .reprojection-status {
     margin-top: 10px;
     padding: 10px;
@@ -45,8 +27,27 @@
     font-weight: 600;
 }
 
+.reprojection-field > label kbd {
+    font-family: inherit;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: #888;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-left: 4px;
+}
+
 .reprojection-field-wide {
     grid-column: 1 / -1;
+}
+
+.reprojection-field > .reprojection-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 2px 0 0;
+    font-weight: 500;
 }
 
 .reprojection-field select,
@@ -159,6 +160,27 @@
     gap: 7px;
 }
 
+.reprojection-primary-options {
+    display: grid;
+    gap: 9px;
+    margin-top: 10px;
+}
+
+.reprojection-inline-field {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+}
+
+.reprojection-inline-field[hidden] {
+    display: none;
+}
+
+.reprojection-inline-field > label {
+    margin: 0;
+}
+
 .reprojection-geometry {
     margin-bottom: 0;
 }
@@ -250,7 +272,7 @@
     overflow-wrap: anywhere;
 }
 
-#reprojection-use-colmap {
+#reprojection-clear-geometries {
     width: 100%;
     padding: 7px;
 }
@@ -273,7 +295,7 @@
     position: relative;
     max-width: 100%;
     max-height: 100%;
-    background: linear-gradient(to bottom, #fff, #747474);
+    background: var(--reprojection-bg, linear-gradient(to bottom, #fff, #747474));
     overflow: hidden;
     user-select: none;
     touch-action: none;
@@ -294,7 +316,7 @@
 
 .reprojection-gpu {
     display: none;
-    background: #000;
+    background: transparent;
     transform-origin: 0 0;
 }
 
@@ -328,6 +350,20 @@
     will-change: clip-path;
 }
 
+.reprojection-input-layer.geometry-active {
+    background: var(--reprojection-bg, linear-gradient(to bottom, #fff, #747474));
+}
+
+.reprojection-input-layer.geometry-active.same-geometry,
+.reprojection-input-layer.geometry-active.gpu-composited {
+    background: transparent;
+}
+
+.reprojection-input-layer.geometry-active.same-geometry .reprojection-input,
+.reprojection-input-layer.geometry-active.gpu-composited .reprojection-input {
+    visibility: hidden;
+}
+
 .reprojection-divider {
     position: absolute;
     z-index: 3;
@@ -356,7 +392,7 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    background: linear-gradient(to bottom, #fff, #747474);
+    background: var(--reprojection-bg, linear-gradient(to bottom, #fff, #747474));
 }
 
 .reprojection-pane img {
