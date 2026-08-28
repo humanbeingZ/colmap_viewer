@@ -231,10 +231,6 @@ class ColmapService:
         elif DataSource.DATABASE in self.sources:
             self.active_source = DataSource.DATABASE
 
-        if self.geometry_path:
-            self.load_external_geometry(self.geometry_path, as_default=True)
-            self._configured_geometry_server_loaded = True
-
     def get_available_sources(self) -> List[str]:
         """Returns a list of names of the available data sources."""
         return [source.value for source in self.sources]

@@ -127,6 +127,23 @@ class ReprojectionMetadataTest(unittest.TestCase):
                 configured_token=descriptor["token"],
             )
 
+    def test_configured_geometry_is_not_eagerly_sampled_as_default(self):
+        with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:
+            geometry_file.write(MINIMAL_ASCII_PLY)
+            geometry_file.flush()
+            service = ColmapService("", geometry_path=geometry_file.name)
+
+            with patch.object(service, "load_external_geometry") as load_geometry:
+                service.load()
+
+            load_geometry.assert_not_called()
+            self.assertFalse(
+                service.get_configured_geometry_file()["server_loaded"]
+            )
+            self.assertEqual(
+                service.get_geometry_status()["kind"], "colmap"
+            )
+
     def test_server_local_geometry_rejects_missing_or_non_ply_files(self):
         service = ColmapService("")
         with self.assertRaisesRegex(ValueError, "does not exist"):

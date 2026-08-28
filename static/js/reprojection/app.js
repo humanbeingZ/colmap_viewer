@@ -109,6 +109,8 @@ const reprojectionState = {
     currentIndex: 0,
     generation: 0,
     pointGeneration: 0,
+    colmapSelectionGeneration: 0,
+    colmapSelectionPending: false,
     splitPercent: 50,
     splitAngle: 0,
     viewScale: 1,
@@ -241,6 +243,36 @@ function cyclePaneSource(pane, direction = 1) {
     applyPaneSource(pane);
 }
 
+async function selectColmapForVisiblePanes(frameGeneration) {
+    const selectionGeneration = ++reprojectionState.colmapSelectionGeneration;
+    reprojectionState.colmapSelectionPending = true;
+    try {
+        const geometry = await reprojectionApi.resetGeometry();
+        if (selectionGeneration !== reprojectionState.colmapSelectionGeneration
+                || frameGeneration !== reprojectionState.generation) {
+            return;
+        }
+        if (paneSources.isColmap(reprojectionState.leftSource)) {
+            applyGeometryStatus(geometry);
+            requestReprojectionPointLayer(frameGeneration);
+        }
+        if (paneSources.isColmap(reprojectionState.rightSource)) {
+            renderReprojectionRightPaneServer(frameGeneration);
+        }
+    } catch (error) {
+        if (selectionGeneration === reprojectionState.colmapSelectionGeneration
+                && frameGeneration === reprojectionState.generation) {
+            setReprojectionStatus(
+                `Failed to select COLMAP points: ${error.message}`, true
+            );
+        }
+    } finally {
+        if (selectionGeneration === reprojectionState.colmapSelectionGeneration) {
+            reprojectionState.colmapSelectionPending = false;
+        }
+    }
+}
+
 function refreshReprojectionPanes() {
     const leftSource = reprojectionState.leftSource;
     const rightSource = reprojectionState.rightSource;
@@ -293,22 +325,15 @@ function refreshReprojectionPanes() {
     } else if (paneSources.isColmap(leftSource)) {
         reprojectionState.renderMode = "server";
         disableReprojectionGpuCanvas();
-        applyGeometryStatus({
-            name: "COLMAP points3D",
-            kind: "colmap",
-            point_count: 0,
-            cache_token: "colmap",
-            gpu: false,
-        });
-        requestReprojectionPointLayer(generation);
     }
 
     if (rightIsGpu && !leftIsGpu) {
         renderReprojectionRightPane(generation);
-    } else if (paneSources.isColmap(rightSource)) {
-        renderReprojectionRightPaneServer(generation);
     } else if (paneSources.isImage(rightSource)) {
         refreshReprojectionInputVisibility();
+    }
+    if (paneSources.isColmap(leftSource) || paneSources.isColmap(rightSource)) {
+        selectColmapForVisiblePanes(generation);
     }
 }
 
@@ -1786,6 +1811,10 @@ function setReprojectionPointSize(value) {
     reprojectionGpuRenderer?.setPointSize(size);
     if (reprojectionState.renderMode === "gpu") {
         renderReprojectionGpuFrame(reprojectionState.generation);
+        return;
+    }
+    if (paneSources.isColmap(reprojectionState.leftSource)
+            && reprojectionState.colmapSelectionPending) {
         return;
     }
     // Normal sizes reuse cached projection/splat data and should respond on
