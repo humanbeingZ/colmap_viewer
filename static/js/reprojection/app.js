@@ -852,6 +852,11 @@ function captureReprojectionGpuFallback() {
     reprojectionState.gpuFallbackReady = true;
 }
 
+function clearReprojectionGpuFallback() {
+    reprojectionState.gpuFallbackReady = false;
+    reprojectionGpuFallback.classList.remove("active");
+}
+
 function isFullFrameGpuView(view) {
     return Math.abs(view.scale - 1) < 1e-6
         && Math.abs(view.translateX) < 1e-6
@@ -1592,6 +1597,8 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         }
         if (isFullFrameGpuView(renderedView)) {
             captureReprojectionGpuFallback();
+        } else {
+            clearReprojectionGpuFallback();
         }
         reprojectionState.gpuRenderedView = renderedView;
         reprojectionState.gpuRenderedSource = reprojectionState.leftSource;

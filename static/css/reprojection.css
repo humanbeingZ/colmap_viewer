@@ -355,9 +355,12 @@
     user-select: none;
 }
 
-.reprojection-viewer.zoomed-in img,
-.reprojection-viewer.zoomed-in canvas {
+.reprojection-viewer.zoomed-in img {
     image-rendering: pixelated;
+}
+
+.reprojection-viewer canvas {
+    image-rendering: auto;
 }
 
 .reprojection-input {
