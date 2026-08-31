@@ -132,22 +132,14 @@ class ColmapService:
 
     def set_configured_geometry_file(self, path: str) -> Dict[str, Any]:
         """Select a server-local PLY for the configured streaming path."""
-        expanded = os.path.expanduser(path)
-        if not os.path.isabs(expanded):
-            raise ValueError("Local geometry path must be absolute")
-        resolved = os.path.realpath(expanded)
-        if os.path.splitext(resolved)[1].lower() != ".ply":
-            raise ValueError("Local geometry must be a .ply file")
-        if not os.path.isfile(resolved):
-            raise ValueError("Local geometry file does not exist")
-        self._ply_loader.validate_header(resolved)
+        resolved = self._ply_loader.resolve_path(path)
         with self._configured_geometry_lock:
             self.geometry_path = resolved
             self._geometry_file_token = secrets.token_urlsafe(32)
             self._configured_geometry_server_loaded = False
             self._configured_mesh_stream = None
             self._configured_mesh_stream_inspected = False
-        return self.get_configured_geometry_file()
+            return self.get_configured_geometry_file()
 
     def activate_configured_geometry(
         self, token: str, request_stream: str = "default"
@@ -528,6 +520,8 @@ class ColmapService:
         request_stream: str = "default",
         region: Optional[tuple] = None,
         clip_frame: bool = False,
+        depth_range: Optional[tuple] = None,
+        depth_fractions: Optional[tuple] = None,
     ) -> bytes:
         """Render the selected geometry through a reconstruction camera."""
         geometry = self._geometry_for_stream(request_stream)
@@ -543,6 +537,8 @@ class ColmapService:
             request_stream=request_stream,
             region=region,
             clip_frame=clip_frame,
+            depth_range=depth_range,
+            depth_fractions=depth_fractions,
         )
 
     def _get_images_from_recon(self) -> List[Dict[str, Any]]:

@@ -118,21 +118,31 @@ class ReprojectionRenderer:
         request_stream: str = "default",
         region: Optional[tuple] = None,
         clip_frame: bool = False,
+        depth_range: Optional[tuple] = None,
+        depth_fractions: Optional[tuple] = None,
     ):
         """Return a one-pixel PNG or its cached depth-aware splat buffers."""
         geometry_token = geometry.cache_token
         view_region = tuple(float(value) for value in region) if region else (
             0.0, float(camera.width), 0.0, float(camera.height)
         )
+        clip_depth = (
+            tuple(float(value) for value in depth_range)
+            if depth_range else None
+        )
+        clip_fractions = (
+            tuple(float(value) for value in depth_fractions)
+            if depth_fractions else None
+        )
         cache_key = (
             "render-base", self.BACKGROUND_VERSION,
             geometry_token, image_id, max_size, color_mode,
-            view_region, clip_frame
+            view_region, clip_frame, clip_depth, clip_fractions
         )
         splat_key = (
             self.BACKGROUND_VERSION,
             geometry_token, image_id, max_size, color_mode,
-            view_region, clip_frame,
+            view_region, clip_frame, clip_depth, clip_fractions,
         )
         cached = self._cache_get(cache_key)
         splat_cached = self._splat_cache_get(splat_key)
@@ -184,6 +194,19 @@ class ReprojectionRenderer:
             xyz_camera = xyz @ matrix[:, :3].T + matrix[:, 3]
             self._check_render_request(request_stream, request_id)
             z = xyz_camera[:, 2]
+            if clip_fractions:
+                # Without a browser-loaded geometry there are no absolute GPU
+                # planes to share. Resolve fractions against this geometry's
+                # exact positive camera-depth extent instead.
+                positive_depth = z[z > 1e-6]
+                if len(positive_depth):
+                    base_near = float(np.min(positive_depth))
+                    base_far = float(np.max(positive_depth))
+                    span = max(base_far - base_near, 1e-9)
+                    clip_depth = (
+                        base_near + span * clip_fractions[0],
+                        base_near + span * clip_fractions[1],
+                    )
             is_pinhole = camera.model_name in {"PINHOLE", "SIMPLE_PINHOLE"}
             # Exact pre-projection frustum test for the pinhole models. This
             # avoids running camera projection for off-screen positive-depth
@@ -217,6 +240,8 @@ class ReprojectionRenderer:
                 )
             else:
                 visible = z > 1e-6
+            if clip_depth:
+                visible &= (z >= clip_depth[0]) & (z <= clip_depth[1])
             xyz_camera = xyz_camera[visible]
             colors = rgb[visible]
 
@@ -341,12 +366,33 @@ class ReprojectionRenderer:
         request_stream: str = "default",
         region: Optional[tuple] = None,
         clip_frame: bool = False,
+        depth_range: Optional[tuple] = None,
+        depth_fractions: Optional[tuple] = None,
     ) -> bytes:
         """Project every point, reusing projection when only size changes."""
         if color_mode not in {"rgb", "depth", "white"}:
             raise ValueError("color_mode must be rgb, depth, or white")
         if not 0 <= radius <= 7:
             raise ValueError("radius must be between 0 and 7")
+        if depth_range and (
+            len(depth_range) != 2
+            or depth_range[0] <= 0
+            or depth_range[1] <= depth_range[0]
+        ):
+            raise ValueError("depth_range requires 0 < near < far")
+        if depth_fractions and (
+            len(depth_fractions) != 2
+            or depth_fractions[0] < 0
+            or depth_fractions[1] > 1
+            or depth_fractions[1] <= depth_fractions[0]
+        ):
+            raise ValueError(
+                "depth_fractions requires 0 <= near < far <= 1"
+            )
+        if depth_range and depth_fractions:
+            raise ValueError(
+                "depth_range and depth_fractions are mutually exclusive"
+            )
 
         geometry_token = geometry.cache_token
         cache_key = (
@@ -354,6 +400,11 @@ class ReprojectionRenderer:
             image_id, max_size, color_mode, radius,
             tuple(float(value) for value in region) if region else None,
             clip_frame,
+            tuple(float(value) for value in depth_range) if depth_range else None,
+            (
+                tuple(float(value) for value in depth_fractions)
+                if depth_fractions else None
+            ),
         )
         if radius > 0:
             cached = self._cache_get(cache_key)
@@ -371,6 +422,8 @@ class ReprojectionRenderer:
             request_stream=request_stream,
             region=region,
             clip_frame=clip_frame,
+            depth_range=depth_range,
+            depth_fractions=depth_fractions,
         )
         if radius == 0:
             return base

@@ -67,6 +67,24 @@ export function depthRangeForSphere(distance, radius, reversedDepth = false) {
     return {near, far};
 }
 
+export function clippedDepthRange(
+    range, nearFraction = 0, farFraction = 1
+) {
+    const minimumGap = 1e-4;
+    const nearRatio = Math.max(
+        0, Math.min(1 - minimumGap, Number(nearFraction) || 0)
+    );
+    const farRatio = Math.max(
+        nearRatio + minimumGap,
+        Math.min(1, Number(farFraction) || 0)
+    );
+    const span = Math.max(Number(range.far) - Number(range.near), 1e-9);
+    return {
+        near: Number(range.near) + span * nearRatio,
+        far: Number(range.near) + span * farRatio,
+    };
+}
+
 export function zoomDetailMaxSize(
     image, baseMaxSize, viewScale, navigationPreview = false,
     rendererLimit = 8192

@@ -338,6 +338,10 @@ def get_reprojection_render(
     right: Optional[float] = None,
     top: Optional[float] = None,
     bottom: Optional[float] = None,
+    near_clip: Optional[float] = None,
+    far_clip: Optional[float] = None,
+    near_clip_fraction: Optional[float] = None,
+    far_clip_fraction: Optional[float] = None,
     clip_frame: bool = False,
 ):
     try:
@@ -350,6 +354,37 @@ def get_reprojection_render(
             region = (left, right, top, bottom)
         else:
             region = None
+        if (near_clip is None) != (far_clip is None):
+            raise ValueError("near_clip and far_clip must be provided together")
+        if near_clip is not None:
+            if near_clip <= 0 or far_clip <= near_clip:
+                raise ValueError(
+                    "Clipping planes require 0 < near_clip < far_clip"
+                )
+            depth_range = (near_clip, far_clip)
+        else:
+            depth_range = None
+        if (near_clip_fraction is None) != (far_clip_fraction is None):
+            raise ValueError(
+                "near_clip_fraction and far_clip_fraction "
+                "must be provided together"
+            )
+        if near_clip_fraction is not None:
+            if (
+                near_clip_fraction < 0
+                or far_clip_fraction > 1
+                or far_clip_fraction <= near_clip_fraction
+            ):
+                raise ValueError(
+                    "Clipping fractions require 0 <= near < far <= 1"
+                )
+            if depth_range is not None:
+                raise ValueError(
+                    "Use clipping planes or clipping fractions, not both"
+                )
+            depth_fractions = (near_clip_fraction, far_clip_fraction)
+        else:
+            depth_fractions = None
         current_geometry = colmap_service.get_geometry_status(stream)
         if geometry and geometry != current_geometry["cache_token"]:
             raise HTTPException(
@@ -361,7 +396,8 @@ def get_reprojection_render(
             )
         png = colmap_service.get_reprojection_render_png(
             image_id, max_size, color, radius,
-            request_stream=stream, region=region, clip_frame=clip_frame
+            request_stream=stream, region=region, clip_frame=clip_frame,
+            depth_range=depth_range, depth_fractions=depth_fractions,
         )
     except RenderSuperseded:
         # The browser has already moved to a newer camera. Returning no content

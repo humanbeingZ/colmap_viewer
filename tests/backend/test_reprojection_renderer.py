@@ -54,7 +54,8 @@ class ReprojectionRendererTest(unittest.TestCase):
 
     def render(
         self, points, colors, radius=0, color_mode="rgb", token="test",
-        region=None, clip_frame=False
+        region=None, clip_frame=False, depth_range=None,
+        depth_fractions=None,
     ):
         return self.renderer.render_png(
             image_id=1,
@@ -67,6 +68,8 @@ class ReprojectionRendererTest(unittest.TestCase):
             request_stream="viewer",
             region=region,
             clip_frame=clip_frame,
+            depth_range=depth_range,
+            depth_fractions=depth_fractions,
         )
 
     def test_nearest_point_wins_at_the_same_pixel(self):
@@ -75,6 +78,31 @@ class ReprojectionRendererTest(unittest.TestCase):
             [[255, 0, 0], [0, 255, 0]],
         ))
         np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
+
+    def test_depth_range_clips_points_before_projection(self):
+        pixels = decode(self.render(
+            [[0, 0, 1], [0, 0, 2], [0, 0, 3]],
+            [[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+            depth_range=(1.5, 2.5),
+        ))
+        np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
+
+    def test_depth_fractions_use_geometry_camera_depth(self):
+        pixels = decode(self.render(
+            [[0, 0, 1], [0, 0, 2], [0, 0, 3]],
+            [[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+            depth_fractions=(0.25, 0.75),
+        ))
+        np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
+
+    def test_depth_range_and_fractions_are_mutually_exclusive(self):
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            self.render(
+                [[0, 0, 1]],
+                [[255, 0, 0]],
+                depth_range=(0.5, 2),
+                depth_fractions=(0, 1),
+            )
 
     def test_background_is_transparent(self):
         pixels = decode_rgba(self.render(

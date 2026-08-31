@@ -21,6 +21,7 @@ var ReprojectionGpu = (() => {
   var gpu_renderer_exports = {};
   __export(gpu_renderer_exports, {
     ReprojectionGpuRenderer: () => ReprojectionGpuRenderer,
+    clippedDepthRange: () => clippedDepthRange,
     depthRangeForSphere: () => depthRangeForSphere,
     detectPlyKind: () => detectPlyKind,
     imageFrameScissor: () => imageFrameScissor,
@@ -68834,6 +68835,22 @@ var<${access}> ${name} : ${structName};`;
     const far = Math.max(near * 1.01, farthest + safeRadius * 0.05);
     return { near, far };
   }
+  function clippedDepthRange(range3, nearFraction = 0, farFraction = 1) {
+    const minimumGap = 1e-4;
+    const nearRatio = Math.max(
+      0,
+      Math.min(1 - minimumGap, Number(nearFraction) || 0)
+    );
+    const farRatio = Math.max(
+      nearRatio + minimumGap,
+      Math.min(1, Number(farFraction) || 0)
+    );
+    const span = Math.max(Number(range3.far) - Number(range3.near), 1e-9);
+    return {
+      near: Number(range3.near) + span * nearRatio,
+      far: Number(range3.near) + span * farRatio
+    };
+  }
   function zoomDetailMaxSize(image, baseMaxSize, viewScale, navigationPreview = false, rendererLimit = 8192) {
     const sourceMaxSize = Math.max(Number(image.width), Number(image.height));
     const base = Math.max(1, Number(baseMaxSize) || 1);
@@ -69065,6 +69082,9 @@ var<${access}> ${name} : ${structName};`;
       this.meshShading = DEFAULT_MESH_SHADING;
       this.meshColor = DEFAULT_MESH_COLOR;
       this.meshBrightness = DEFAULT_MESH_BRIGHTNESS;
+      this.nearClipFraction = 0;
+      this.farClipFraction = 1;
+      this.clippingReferenceKey = null;
       this.meshBrightnessNode = uniform2(this.meshBrightness);
       this.comparisonWidthNode = uniform2(1);
       this.comparisonHeightNode = uniform2(1);
@@ -69348,9 +69368,9 @@ var<${access}> ${name} : ${structName};`;
       if (this.activeKey === key) {
         return;
       }
-      const prev = this.geometries.get(this.activeKey);
-      if (prev) {
-        prev.object.visible = false;
+      const previous = this.geometries.get(this.activeKey);
+      if (previous) {
+        previous.object.visible = false;
       }
       const entry = this.geometries.get(key);
       if (entry) {
@@ -69403,30 +69423,57 @@ var<${access}> ${name} : ${structName};`;
     supportsCamera(image) {
       return isPinholeCamera(image);
     }
+    geometryDepthRange(entry, viewMatrix = this.camera.matrixWorldInverse) {
+      const object = entry?.object;
+      const sourceGeometry = object?.splatGeometry || object?.geometry;
+      const sphere = object?.userData?.boundingSphere || sourceGeometry?.boundingSphere;
+      if (!sphere) {
+        return { near: 1e-4, far: 1e7 };
+      }
+      const center = sphere.center.clone().applyMatrix4(
+        viewMatrix
+      );
+      return depthRangeForSphere(
+        -center.z,
+        Math.max(sphere.radius, 1e-6),
+        this.renderer.reversedDepthBuffer
+      );
+    }
+    clippingDepthRange(viewMatrix = this.camera.matrixWorldInverse) {
+      const customClipping = this.nearClipFraction > 1e-9 || this.farClipFraction < 1 - 1e-9;
+      let reference3 = customClipping ? this.geometries.get(this.clippingReferenceKey) : this.geometries.get(this.activeKey);
+      if (customClipping && !reference3) {
+        this.clippingReferenceKey = this.activeKey;
+        reference3 = this.geometries.get(this.activeKey);
+      }
+      return this.geometryDepthRange(reference3, viewMatrix);
+    }
+    clippingPlanesForImage(image) {
+      const viewMatrix = new Matrix4();
+      const rows = threeViewRows(image.cam_from_world);
+      viewMatrix.set(...rows.flat());
+      return clippedDepthRange(
+        this.clippingDepthRange(viewMatrix),
+        this.nearClipFraction,
+        this.farClipFraction
+      );
+    }
     configureCamera(image, region = null) {
       const rows = threeViewRows(image.cam_from_world);
       this.camera.matrixWorldInverse.set(...rows.flat());
       this.camera.matrixWorld.copy(this.camera.matrixWorldInverse).invert();
       this.camera.matrix.copy(this.camera.matrixWorld);
-      let near = 1e-4;
-      let far = 1e7;
-      const sourceGeometry = this.object?.splatGeometry || this.object?.geometry;
-      const sphere = this.object?.userData?.boundingSphere || sourceGeometry?.boundingSphere;
-      if (sphere) {
-        const center = sphere.center.clone().applyMatrix4(this.camera.matrixWorldInverse);
-        const radius = Math.max(sphere.radius, 1e-6);
-        const distance3 = -center.z;
-        ({ near, far } = depthRangeForSphere(
-          distance3,
-          radius,
-          this.renderer.reversedDepthBuffer
-        ));
-      }
+      let { near, far } = this.clippingDepthRange();
+      this.camera.coordinateSystem = this.renderer.coordinateSystem;
       this.camera._reversedDepth = Boolean(this.renderer.reversedDepthBuffer);
+      ({ near, far } = clippedDepthRange(
+        { near, far },
+        this.nearClipFraction,
+        this.farClipFraction
+      ));
       const frustum = projectionFrustum(image, near, far, region);
       this.camera.near = frustum.near;
       this.camera.far = frustum.far;
-      this.camera.coordinateSystem = this.renderer.coordinateSystem;
       this.camera.projectionMatrix.makePerspective(
         frustum.left,
         frustum.right,
@@ -69636,6 +69683,26 @@ var<${access}> ${name} : ${structName};`;
           entry.object.material.needsUpdate = true;
         }
       }
+    }
+    setClippingRange(nearFraction, farFraction) {
+      const wasDefault = this.nearClipFraction <= 1e-9 && this.farClipFraction >= 1 - 1e-9;
+      const range3 = clippedDepthRange(
+        { near: 0, far: 1 },
+        nearFraction,
+        farFraction
+      );
+      this.nearClipFraction = range3.near;
+      this.farClipFraction = range3.far;
+      const isDefault = this.nearClipFraction <= 1e-9 && this.farClipFraction >= 1 - 1e-9;
+      if (wasDefault && !isDefault) {
+        this.clippingReferenceKey = this.activeKey;
+      } else if (isDefault) {
+        this.clippingReferenceKey = null;
+      }
+      return {
+        near: this.nearClipFraction,
+        far: this.farClipFraction
+      };
     }
     updateMeshMaterial() {
       for (const [, entry] of this.geometries) {

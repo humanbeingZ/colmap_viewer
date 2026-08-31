@@ -6,6 +6,7 @@ import uvicorn
 
 from viewer.app import app, configure_service
 from viewer.colmap_service import ColmapService
+from viewer.geometry.ply import PlyGeometryLoader
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +22,15 @@ def parse_args() -> argparse.Namespace:
         help="PLY point cloud or mesh to use instead of COLMAP points3D",
     )
     parser.add_argument("-p", "--port", type=int, default=8000)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.geometry:
+        try:
+            args.geometry = PlyGeometryLoader.resolve_path(
+                args.geometry, require_absolute=False
+            )
+        except ValueError as error:
+            parser.error(str(error))
+    return args
 
 
 def main() -> None:

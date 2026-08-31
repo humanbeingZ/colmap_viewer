@@ -15,6 +15,7 @@ import {
 } from "three/tsl";
 
 import {
+    clippedDepthRange,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,
@@ -104,6 +105,9 @@ export class ReprojectionGpuRenderer {
         this.meshShading = DEFAULT_MESH_SHADING;
         this.meshColor = DEFAULT_MESH_COLOR;
         this.meshBrightness = DEFAULT_MESH_BRIGHTNESS;
+        this.nearClipFraction = 0;
+        this.farClipFraction = 1;
+        this.clippingReferenceKey = null;
         this.meshBrightnessNode = uniform(this.meshBrightness);
         this.comparisonWidthNode = uniform(1);
         this.comparisonHeightNode = uniform(1);
@@ -433,9 +437,9 @@ export class ReprojectionGpuRenderer {
         if (this.activeKey === key) {
             return;
         }
-        const prev = this.geometries.get(this.activeKey);
-        if (prev) {
-            prev.object.visible = false;
+        const previous = this.geometries.get(this.activeKey);
+        if (previous) {
+            previous.object.visible = false;
         }
         const entry = this.geometries.get(key);
         if (entry) {
@@ -492,30 +496,65 @@ export class ReprojectionGpuRenderer {
         return isPinholeCamera(image);
     }
 
+    geometryDepthRange(
+        entry, viewMatrix = this.camera.matrixWorldInverse
+    ) {
+        const object = entry?.object;
+        const sourceGeometry = object?.splatGeometry || object?.geometry;
+        const sphere = object?.userData?.boundingSphere
+            || sourceGeometry?.boundingSphere;
+        if (!sphere) {
+            return {near: 1e-4, far: 1e7};
+        }
+        const center = sphere.center.clone().applyMatrix4(
+            viewMatrix
+        );
+        return depthRangeForSphere(
+            -center.z,
+            Math.max(sphere.radius, 1e-6),
+            this.renderer.reversedDepthBuffer
+        );
+    }
+
+    clippingDepthRange(viewMatrix = this.camera.matrixWorldInverse) {
+        const customClipping = this.nearClipFraction > 1e-9
+            || this.farClipFraction < 1 - 1e-9;
+        let reference = customClipping
+            ? this.geometries.get(this.clippingReferenceKey)
+            : this.geometries.get(this.activeKey);
+        if (customClipping && !reference) {
+            this.clippingReferenceKey = this.activeKey;
+            reference = this.geometries.get(this.activeKey);
+        }
+        return this.geometryDepthRange(reference, viewMatrix);
+    }
+
+    clippingPlanesForImage(image) {
+        const viewMatrix = new THREE.Matrix4();
+        const rows = threeViewRows(image.cam_from_world);
+        viewMatrix.set(...rows.flat());
+        return clippedDepthRange(
+            this.clippingDepthRange(viewMatrix),
+            this.nearClipFraction,
+            this.farClipFraction
+        );
+    }
+
     configureCamera(image, region = null) {
         const rows = threeViewRows(image.cam_from_world);
         this.camera.matrixWorldInverse.set(...rows.flat());
         this.camera.matrixWorld.copy(this.camera.matrixWorldInverse).invert();
         this.camera.matrix.copy(this.camera.matrixWorld);
 
-        let near = 1e-4;
-        let far = 1e7;
-        const sourceGeometry = this.object?.splatGeometry || this.object?.geometry;
-        const sphere = this.object?.userData?.boundingSphere
-            || sourceGeometry?.boundingSphere;
-        if (sphere) {
-            const center = sphere.center.clone().applyMatrix4(this.camera.matrixWorldInverse);
-            const radius = Math.max(sphere.radius, 1e-6);
-            const distance = -center.z;
-            ({near, far} = depthRangeForSphere(
-                distance, radius, this.renderer.reversedDepthBuffer
-            ));
-        }
+        let {near, far} = this.clippingDepthRange();
+        this.camera.coordinateSystem = this.renderer.coordinateSystem;
         this.camera._reversedDepth = Boolean(this.renderer.reversedDepthBuffer);
+        ({near, far} = clippedDepthRange(
+            {near, far}, this.nearClipFraction, this.farClipFraction
+        ));
         const frustum = projectionFrustum(image, near, far, region);
         this.camera.near = frustum.near;
         this.camera.far = frustum.far;
-        this.camera.coordinateSystem = this.renderer.coordinateSystem;
         this.camera.projectionMatrix.makePerspective(
             frustum.left, frustum.right, frustum.top, frustum.bottom,
             frustum.near, frustum.far, this.camera.coordinateSystem,
@@ -718,6 +757,27 @@ export class ReprojectionGpuRenderer {
         }
     }
 
+    setClippingRange(nearFraction, farFraction) {
+        const wasDefault = this.nearClipFraction <= 1e-9
+            && this.farClipFraction >= 1 - 1e-9;
+        const range = clippedDepthRange(
+            {near: 0, far: 1}, nearFraction, farFraction
+        );
+        this.nearClipFraction = range.near;
+        this.farClipFraction = range.far;
+        const isDefault = this.nearClipFraction <= 1e-9
+            && this.farClipFraction >= 1 - 1e-9;
+        if (wasDefault && !isDefault) {
+            this.clippingReferenceKey = this.activeKey;
+        } else if (isDefault) {
+            this.clippingReferenceKey = null;
+        }
+        return {
+            near: this.nearClipFraction,
+            far: this.farClipFraction,
+        };
+    }
+
     updateMeshMaterial() {
         for (const [, entry] of this.geometries) {
             if (entry.kind !== "triangle mesh" || !entry.object) {
@@ -883,6 +943,7 @@ export class ReprojectionGpuRenderer {
 }
 
 export {
+    clippedDepthRange,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,

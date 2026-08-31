@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {PerspectiveCamera, Vector3} from "three";
 import {
+    clippedDepthRange,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,
@@ -51,6 +52,16 @@ const enclosingRange = depthRangeForSphere(2, 10, false);
 assert.equal(enclosingRange.near, 0.001);
 assert.equal(enclosingRange.far, 12.5);
 assert.equal(depthRangeForSphere(2, 10, true).near, 0.00001);
+assert.deepEqual(clippedDepthRange({near: 10, far: 110}, 0.2, 0.8), {
+    near: 30,
+    far: 90,
+});
+assert.deepEqual(clippedDepthRange({near: 10, far: 110}, -1, 2), {
+    near: 10,
+    far: 110,
+});
+const minimumClipRange = clippedDepthRange({near: 1, far: 101}, 0.9, 0.1);
+assert.ok(minimumClipRange.far > minimumClipRange.near);
 
 const detailImage = {width: 6000, height: 4000};
 assert.equal(zoomDetailMaxSize(detailImage, 1600, 1), 1600);

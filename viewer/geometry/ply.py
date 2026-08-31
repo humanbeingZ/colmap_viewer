@@ -141,6 +141,20 @@ class PlyGeometryLoader:
         """Reject files that do not contain a bounded, parseable PLY header."""
         cls._ply_header_info(path)
 
+    @classmethod
+    def resolve_path(cls, path: str, require_absolute: bool = True) -> str:
+        """Return a canonical, validated path to a PLY file."""
+        expanded = os.path.expanduser(path)
+        if require_absolute and not os.path.isabs(expanded):
+            raise ValueError("Local geometry path must be absolute")
+        resolved = os.path.realpath(os.path.abspath(expanded))
+        if os.path.splitext(resolved)[1].lower() != ".ply":
+            raise ValueError("Local geometry must be a .ply file")
+        if not os.path.isfile(resolved):
+            raise ValueError(f"Local geometry file does not exist: {resolved}")
+        cls.validate_header(resolved)
+        return resolved
+
     def _vertex_selection(self, count: int):
         if count <= self.max_points:
             return slice(None)

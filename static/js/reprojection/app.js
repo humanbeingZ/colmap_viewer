@@ -48,8 +48,17 @@ const reprojectionBackgroundBottom = document.getElementById(
 const reprojectionFlip = document.getElementById("reprojection-flip");
 const reprojectionResetView = document.getElementById("reprojection-reset-view");
 const reprojectionResetDivider = document.getElementById("reprojection-reset-divider");
+const reprojectionResetClipping = document.getElementById(
+    "reprojection-reset-clipping"
+);
 const reprojectionLeftSource = document.getElementById("reprojection-left-source");
 const reprojectionRightSource = document.getElementById("reprojection-right-source");
+const reprojectionLeftSourcePicker = document.getElementById(
+    "reprojection-left-source-picker"
+);
+const reprojectionRightSourcePicker = document.getElementById(
+    "reprojection-right-source-picker"
+);
 const reprojectionGeometryDrop = document.getElementById("reprojection-geometry-drop");
 const reprojectionGeometryFile = document.getElementById("reprojection-geometry-file");
 const reprojectionGeometryStatus = document.getElementById("reprojection-geometry-status");
@@ -75,7 +84,8 @@ async function recoverFromLateIdentityCollision(replacementStream) {
     if (reprojectionIdentity.id !== replacementStream) {
         return;
     }
-    reprojectionUploadController?.abort();
+    cancelConfiguredGeometryLoads();
+    supersedeGeometryLoad({clearDropState: true});
     reprojectionState.generation += 1;
     reprojectionState.pointGeneration += 1;
     reprojectionState.prefetchInFlight.clear();
@@ -99,6 +109,7 @@ if (!Number.isSafeInteger(reprojectionUploadGeneration)
     reprojectionUploadGeneration = 0;
 }
 let reprojectionUploadController = null;
+let activeGeometryLoadOperation = null;
 
 const reprojectionState = {
     images: [],
@@ -116,6 +127,8 @@ const reprojectionState = {
     viewScale: 1,
     viewTranslateX: 0,
     viewTranslateY: 0,
+    nearClipFraction: 0,
+    farClipFraction: 1,
     maxSize: 1600,
     maxRenderSize: null,
     maxInputSize: 8192,
@@ -148,12 +161,18 @@ const reprojectionState = {
     rightRenderedView: {scale: 1, translateX: 0, translateY: 0},
     rightRenderedSource: "image",
     loadedGeometries: [],
+    configuredGeometryLoads: new Map(),
+    configuredGeometryLoadQueue: Promise.resolve(),
+    configuredGeometryQueueGeneration: 0,
     leftSource: "colmap",
     rightSource: "image",
     rightRenderObjectUrl: null,
 };
 
 let reprojectionGpuRenderer = null;
+const clippingRenderScheduler = new ReprojectionLatestTaskScheduler();
+let lastClippingWheelTime = -Infinity;
+let lastClippingWheelPlane = null;
 
 function getReprojectionGpuRenderer() {
     if (!reprojectionGpuRenderer) {
@@ -164,9 +183,28 @@ function getReprojectionGpuRenderer() {
             reprojectionGpuCanvas
         );
         reprojectionGpuRenderer.setPointSize(reprojectionPointSize.value);
+        reprojectionGpuRenderer.setClippingRange(
+            reprojectionState.nearClipFraction,
+            reprojectionState.farClipFraction
+        );
     }
     return reprojectionGpuRenderer;
 }
+
+const paneSourcePickers = {
+    left: new ReprojectionSourcePicker({
+        select: reprojectionLeftSource,
+        picker: reprojectionLeftSourcePicker,
+        cycleIndex: paneSources.cycleIndex,
+        onSelect: () => applyPaneSource("left"),
+    }),
+    right: new ReprojectionSourcePicker({
+        select: reprojectionRightSource,
+        picker: reprojectionRightSourcePicker,
+        cycleIndex: paneSources.cycleIndex,
+        onSelect: () => applyPaneSource("right"),
+    }),
+};
 
 function rebuildPaneSourceOptions() {
     const geometries = reprojectionState.loadedGeometries;
@@ -211,6 +249,8 @@ function rebuildPaneSourceOptions() {
     if (!reprojectionRightSource.value) {
         reprojectionRightSource.value = "image";
     }
+    paneSourcePickers.left.sync();
+    paneSourcePickers.right.sync();
 }
 
 function applyPaneSource(pane) {
@@ -226,21 +266,12 @@ function applyPaneSource(pane) {
             paneSources.isGeometry(value)
         );
     }
+    paneSourcePickers[pane].sync();
     refreshReprojectionPanes();
 }
 
 function cyclePaneSource(pane, direction = 1) {
-    const select = pane === "left" ? reprojectionLeftSource : reprojectionRightSource;
-    const options = [...select.options];
-    if (options.length <= 1) {
-        return;
-    }
-    const currentIndex = options.findIndex(opt => opt.value === select.value);
-    const nextIndex = paneSources.cycleIndex(
-        currentIndex, options.length, direction
-    );
-    select.value = options[nextIndex].value;
-    applyPaneSource(pane);
+    paneSourcePickers[pane].cycle(direction);
 }
 
 async function selectColmapForVisiblePanes(frameGeneration) {
@@ -640,6 +671,7 @@ async function ensureReprojectionImages() {
     if (reprojectionState.loaded) {
         return;
     }
+    const configuredGeometry = reprojectionState.configuredGeometry;
     setReprojectionStatus("Loading registered images…");
     try {
         reprojectionState.images = await reprojectionApi.images();
@@ -663,9 +695,9 @@ async function ensureReprojectionImages() {
         reprojectionState.currentIndex = matchingIndex >= 0 ? matchingIndex : 0;
         reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
         loadReprojectionFrame(reprojectionState.currentIndex);
-        if (reprojectionState.configuredGeometry) {
+        if (configuredGeometry) {
             const result = await loadConfiguredReprojectionGeometry(
-                reprojectionState.configuredGeometry
+                configuredGeometry
             );
             if (result !== configuredGeometryLoadResult.loaded
                     && reprojectionState.renderMode === "server") {
@@ -886,6 +918,11 @@ function isFullFrameGpuView(view) {
     return Math.abs(view.scale - 1) < 1e-6
         && Math.abs(view.translateX) < 1e-6
         && Math.abs(view.translateY) < 1e-6;
+}
+
+function isDefaultGpuClippingRange() {
+    return Math.abs(reprojectionState.nearClipFraction) < 1e-9
+        && Math.abs(reprojectionState.farClipFraction - 1) < 1e-9;
 }
 
 function currentReprojectionView() {
@@ -1112,6 +1149,19 @@ function reprojectionUrls(
     const stream = encodeURIComponent(requestStream);
     const geometry = geometryToken === null
         ? "" : `&geometry=${encodeURIComponent(geometryToken)}`;
+    const customClipping = !isDefaultGpuClippingRange();
+    const hasGpuClippingReference = Boolean(
+        reprojectionGpuRenderer?.getGeometryKeys().length
+    );
+    const clipping = customClipping && hasGpuClippingReference
+        ? reprojectionGpuRenderer.clippingPlanesForImage(image)
+        : null;
+    const clippingQuery = clipping
+        ? `&near_clip=${clipping.near}&far_clip=${clipping.far}`
+        : customClipping
+            ? `&near_clip_fraction=${reprojectionState.nearClipFraction}`
+                + `&far_clip_fraction=${reprojectionState.farClipFraction}`
+            : "";
     const pointRender = pointRenderParameters();
     const display = reprojectionDisplaySize(image);
     const region = ReprojectionGpu.zoomViewRegion(
@@ -1131,6 +1181,7 @@ function reprojectionUrls(
             + `${geometry}&format=png-v3`
             + `&left=${region.left}&right=${region.right}`
             + `&top=${region.top}&bottom=${region.bottom}`
+            + clippingQuery
             + `&clip_frame=${confineGeometryToImageFrame() ? 1 : 0}`,
     };
 }
@@ -1143,11 +1194,50 @@ function supersedeGeometryLoad({clearDropState = false} = {}) {
     );
     reprojectionUploadController?.abort();
     reprojectionUploadController = null;
+    activeGeometryLoadOperation = null;
     reprojectionState.browserGeometryLoading = false;
     if (clearDropState) {
         reprojectionGeometryDrop.classList.remove("loading", "drag-over");
+        reprojectionGeometryFile.value = "";
     }
     return reprojectionUploadGeneration;
+}
+
+function cancelConfiguredGeometryLoads() {
+    reprojectionState.configuredGeometryQueueGeneration += 1;
+    reprojectionState.configuredGeometryLoads.clear();
+}
+
+function beginGeometryLoad(owner) {
+    // Direct file selections replace pending work. Configured-path loads are
+    // additive and serialize through configuredGeometryLoadQueue.
+    if (owner === "direct") {
+        cancelConfiguredGeometryLoads();
+    }
+    const generation = supersedeGeometryLoad();
+    let resolveFinished;
+    const finished = new Promise(resolve => {
+        resolveFinished = resolve;
+    });
+    const operation = {owner, generation, finished, resolveFinished};
+    activeGeometryLoadOperation = operation;
+    return operation;
+}
+
+function finishGeometryLoad(operation) {
+    operation.resolveFinished();
+    if (activeGeometryLoadOperation === operation) {
+        activeGeometryLoadOperation = null;
+    }
+}
+
+function supersedeDirectGeometryLoad() {
+    const operation = activeGeometryLoadOperation;
+    if (operation?.owner === "direct") {
+        supersedeGeometryLoad({clearDropState: true});
+        return operation.finished;
+    }
+    return Promise.resolve();
 }
 
 async function uploadServerGeometry(file) {
@@ -1156,7 +1246,8 @@ async function uploadServerGeometry(file) {
         return;
     }
     await reprojectionIdentityReady;
-    const generation = supersedeGeometryLoad();
+    const operation = beginGeometryLoad("direct");
+    const generation = operation.generation;
     const uploadController = new AbortController();
     reprojectionUploadController = uploadController;
     stopContinuousNavigation(false);
@@ -1192,6 +1283,7 @@ async function uploadServerGeometry(file) {
             reprojectionGeometryFile.value = "";
             reprojectionClearGeometries.disabled = !hasClearableGeometry();
         }
+        finishGeometryLoad(operation);
     }
 }
 
@@ -1200,14 +1292,27 @@ async function loadReprojectionGeometry(file) {
         setReprojectionStatus("Only PLY point clouds and meshes are supported.", true);
         return;
     }
+    await reprojectionIdentityReady;
+    const intent = beginGeometryLoad("direct");
+    await reprojectionState.configuredGeometryLoadQueue;
+    if (activeGeometryLoadOperation !== intent) {
+        finishGeometryLoad(intent);
+        return;
+    }
     const image = reprojectionState.images[reprojectionState.currentIndex];
     let kind;
     try {
         kind = await ReprojectionGpu.ReprojectionGpuRenderer.inspectFile(file);
     } catch (error) {
         setReprojectionStatus(`Failed to inspect ${file.name}: ${error.message}`, true);
+        finishGeometryLoad(intent);
         return;
     }
+    if (activeGeometryLoadOperation !== intent) {
+        finishGeometryLoad(intent);
+        return;
+    }
+    finishGeometryLoad(intent);
 
     // Distorted cameras still use the numerical renderer, which applies the
     // exact COLMAP camera model. The Three path is exact for pinhole cameras.
@@ -1222,25 +1327,84 @@ async function loadReprojectionGeometry(file) {
     );
 }
 
-async function loadConfiguredReprojectionGeometry(configuredGeometry) {
+function enqueueConfiguredGeometryTask(task) {
+    const queueGeneration = reprojectionState.configuredGeometryQueueGeneration;
+    const run = () => {
+        if (queueGeneration !== reprojectionState.configuredGeometryQueueGeneration) {
+            return configuredGeometryLoadResult.failed;
+        }
+        return task(() => (
+            queueGeneration === reprojectionState.configuredGeometryQueueGeneration
+        ));
+    };
+    const queued = reprojectionState.configuredGeometryLoadQueue.then(
+        run, run
+    );
+    reprojectionState.configuredGeometryLoadQueue = queued.catch(() => {});
+    return queued;
+}
+
+function loadConfiguredReprojectionGeometry(configuredGeometry) {
+    const sourceId = configuredGeometry.url;
+    if (reprojectionState.loadedGeometries.some(
+        geometry => geometry.sourceId === sourceId
+    )) {
+        return Promise.resolve(configuredGeometryLoadResult.loaded);
+    }
+    const pendingLoad = reprojectionState.configuredGeometryLoads.get(sourceId);
+    if (pendingLoad) {
+        return pendingLoad;
+    }
+    const load = enqueueConfiguredGeometryTask(
+        isCurrent => loadConfiguredReprojectionGeometryNow(
+            configuredGeometry, isCurrent
+        )
+    );
+    reprojectionState.configuredGeometryLoads.set(sourceId, load);
+    const clearPendingLoad = () => {
+        if (reprojectionState.configuredGeometryLoads.get(sourceId) === load) {
+            reprojectionState.configuredGeometryLoads.delete(sourceId);
+        }
+    };
+    load.then(clearPendingLoad, clearPendingLoad);
+    return load;
+}
+
+async function loadConfiguredReprojectionGeometryNow(
+    configuredGeometry, isCurrent = () => true
+) {
     const image = reprojectionState.images[reprojectionState.currentIndex];
     if (!image) {
         return configuredGeometryLoadResult.deferred;
     }
     if (!ReprojectionGpu.isPinholeCamera(image)) {
-        await activateConfiguredServerGeometry(configuredGeometry);
+        const activated = await activateConfiguredServerGeometry(
+            configuredGeometry, isCurrent
+        );
+        return activated
+            ? configuredGeometryLoadResult.loaded
+            : configuredGeometryLoadResult.failed;
+    }
+    const sourceId = configuredGeometry.url;
+    if (reprojectionState.loadedGeometries.some(
+        geometry => geometry.sourceId === sourceId
+    )) {
         return configuredGeometryLoadResult.loaded;
     }
     const installed = await installBrowserGeometry(
         configuredGeometry.name,
-        configuredBrowserGeometryLoader(configuredGeometry, image)
+        configuredBrowserGeometryLoader(configuredGeometry, image),
+        sourceId,
+        "configured"
     );
     return installed
         ? configuredGeometryLoadResult.loaded
         : configuredGeometryLoadResult.failed;
 }
 
-async function activateConfiguredServerGeometry(configuredGeometry) {
+async function activateConfiguredServerGeometry(
+    configuredGeometry, isCurrent = () => true
+) {
     setReprojectionStatus(
         `Preparing ${configuredGeometry.name} for server rendering…`
     );
@@ -1248,6 +1412,9 @@ async function activateConfiguredServerGeometry(configuredGeometry) {
         const geometryStatus = await reprojectionApi.activateConfiguredGeometry(
             configuredGeometry.activate_url
         );
+        if (!isCurrent()) {
+            return false;
+        }
         configuredGeometry.server_loaded = true;
         applyGeometryStatus(geometryStatus);
     }
@@ -1255,6 +1422,7 @@ async function activateConfiguredServerGeometry(configuredGeometry) {
     if (reprojectionState.loaded) {
         requestReprojectionPointLayer(reprojectionState.generation);
     }
+    return true;
 }
 
 function configuredBrowserGeometryLoader(configuredGeometry, image) {
@@ -1281,19 +1449,33 @@ async function loadLocalReprojectionGeometry() {
     }
     reprojectionLocalPath.disabled = true;
     reprojectionLoadLocalPath.disabled = true;
-    setReprojectionStatus(`Inspecting ${path}…`);
+    setReprojectionStatus(`Queued ${path}…`);
     try {
         await reprojectionIdentityReady;
-        supersedeGeometryLoad({clearDropState: true});
-        const configuredGeometry = await reprojectionApi.loadLocalGeometry(path);
-        reprojectionState.configuredGeometry = configuredGeometry;
-        if (!reprojectionState.images.length) {
-            setReprojectionStatus(
-                `${configuredGeometry.name} selected; open 3D reprojection to load it.`
+        const directLoadFinished = supersedeDirectGeometryLoad();
+        await enqueueConfiguredGeometryTask(async isCurrent => {
+            await directLoadFinished;
+            if (!isCurrent()) {
+                return configuredGeometryLoadResult.failed;
+            }
+            setReprojectionStatus(`Inspecting ${path}…`);
+            const configuredGeometry =
+                await reprojectionApi.loadLocalGeometry(path);
+            if (!isCurrent()) {
+                return configuredGeometryLoadResult.failed;
+            }
+            reprojectionState.configuredGeometry = configuredGeometry;
+            if (!reprojectionState.images.length) {
+                setReprojectionStatus(
+                    `${configuredGeometry.name} selected; `
+                    + "open 3D reprojection to load it."
+                );
+                return configuredGeometryLoadResult.deferred;
+            }
+            return loadConfiguredReprojectionGeometryNow(
+                configuredGeometry, isCurrent
             );
-            return;
-        }
-        await loadConfiguredReprojectionGeometry(configuredGeometry);
+        });
     } catch (error) {
         setReprojectionStatus(
             `Failed to load local geometry: ${error.message}`, true
@@ -1304,10 +1486,13 @@ async function loadLocalReprojectionGeometry() {
     }
 }
 
-async function installBrowserGeometry(name, loadGeometry) {
+async function installBrowserGeometry(
+    name, loadGeometry, sourceId = null, owner = "direct"
+) {
     const renderer = getReprojectionGpuRenderer();
 
-    const generation = supersedeGeometryLoad();
+    const operation = beginGeometryLoad(owner);
+    const generation = operation.generation;
     reprojectionState.browserGeometryLoading = true;
     stopContinuousNavigation(false);
     reprojectionGeometryDrop.classList.add("loading");
@@ -1336,8 +1521,17 @@ async function installBrowserGeometry(name, loadGeometry) {
                 return false;
             }
         }
+        const duplicate = sourceId && reprojectionState.loadedGeometries.find(
+            loaded => loaded.sourceId === sourceId
+        );
+        if (duplicate) {
+            await renderer.disposeGeometry(geometry.key);
+            renderer.activateGeometry(duplicate.gpuKey);
+            return true;
+        }
         reprojectionState.loadedGeometries.push({
             gpuKey: geometry.key,
+            sourceId,
             name,
             kind: geometry.kind,
             count: geometry.count,
@@ -1371,10 +1565,12 @@ async function installBrowserGeometry(name, loadGeometry) {
             reprojectionGeometryFile.value = "";
             reprojectionClearGeometries.disabled = !hasClearableGeometry();
         }
+        finishGeometryLoad(operation);
     }
 }
 
 async function clearLoadedGeometries() {
+    cancelConfiguredGeometryLoads();
     await reprojectionIdentityReady;
     supersedeGeometryLoad({clearDropState: true});
     if (reprojectionGpuRenderer) {
@@ -1620,7 +1816,8 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
                 || reprojectionState.renderMode !== "gpu") {
             return;
         }
-        if (isFullFrameGpuView(renderedView)) {
+        if (isFullFrameGpuView(renderedView)
+                && isDefaultGpuClippingRange()) {
             captureReprojectionGpuFallback();
         } else {
             clearReprojectionGpuFallback();
@@ -1805,6 +2002,62 @@ function applyReprojectionFlip() {
     applyReprojectionViewTransform();
 }
 
+function requestClippingPlaneRender() {
+    clippingRenderScheduler.request(async () => {
+        const generation = reprojectionState.generation;
+        if (reprojectionState.renderMode === "gpu") {
+            await renderReprojectionGpuFrame(generation);
+        } else if (paneSources.isGpuGeometry(reprojectionState.rightSource)) {
+            await renderReprojectionRightPane(generation);
+        }
+        if (paneSources.isColmap(reprojectionState.leftSource)) {
+            requestReprojectionPointLayer(generation);
+        }
+        if (paneSources.isColmap(reprojectionState.rightSource)) {
+            renderReprojectionRightPaneServer(generation);
+        }
+    });
+}
+
+function resetReprojectionClippingPlanes() {
+    reprojectionState.nearClipFraction = 0;
+    reprojectionState.farClipFraction = 1;
+    if (reprojectionGpuRenderer) {
+        reprojectionGpuRenderer.setClippingRange(0, 1);
+    }
+    setReprojectionStatus("Clipping planes reset.");
+    requestClippingPlaneRender();
+}
+
+function stepReprojectionClippingPlane(plane, direction, increment) {
+    const oldNear = reprojectionState.nearClipFraction;
+    const oldFar = reprojectionState.farClipFraction;
+    const range = ReprojectionClippingScroll.adjustRange(
+        oldNear, oldFar, plane, direction, increment
+    );
+    reprojectionState.nearClipFraction = range.near;
+    reprojectionState.farClipFraction = range.far;
+    if (oldNear === reprojectionState.nearClipFraction
+            && oldFar === reprojectionState.farClipFraction) {
+        return;
+    }
+    reprojectionGpuRenderer?.setClippingRange(
+        reprojectionState.nearClipFraction,
+        reprojectionState.farClipFraction
+    );
+    if (!isDefaultGpuClippingRange()) {
+        clearReprojectionGpuFallback();
+    }
+    setReprojectionStatus(
+        `Clipping depth: near ${(
+            reprojectionState.nearClipFraction * 100
+        ).toFixed(1)}%, far ${(
+            reprojectionState.farClipFraction * 100
+        ).toFixed(1)}%`
+    );
+    requestClippingPlaneRender();
+}
+
 function setReprojectionPointSize(value) {
     const size = ReprojectionPointSize.normalize(value);
     reprojectionPointSize.value = size;
@@ -1931,6 +2184,9 @@ reprojectionResetView.addEventListener("click", resetReprojectionViewTransform);
 reprojectionResetDivider.addEventListener("click", () => {
     reprojectionInteraction.resetDivider();
 });
+reprojectionResetClipping.addEventListener(
+    "click", resetReprojectionClippingPlanes
+);
 reprojectionGeometryDrop.addEventListener("click", () => reprojectionGeometryFile.click());
 reprojectionGeometryDrop.addEventListener("keydown", event => {
     if (event.key === "Enter" || event.key === " ") {
@@ -1975,7 +2231,20 @@ reprojectionLayout.addEventListener("change", () => {
 });
 reprojectionInteraction.attach();
 reprojectionViewer.addEventListener("wheel", event => {
-    if (event.ctrlKey || event.metaKey) {
+    if (event.altKey) {
+        event.preventDefault();
+        const plane = event.shiftKey ? "near" : "far";
+        const elapsedMs = plane === lastClippingWheelPlane
+            ? event.timeStamp - lastClippingWheelTime
+            : Infinity;
+        const increment = ReprojectionClippingScroll.adaptiveStep(
+            event.deltaY, elapsedMs, event.deltaMode
+        );
+        lastClippingWheelTime = event.timeStamp;
+        lastClippingWheelPlane = plane;
+        const direction = event.deltaY < 0 ? 1 : -1;
+        stepReprojectionClippingPlane(plane, direction, increment);
+    } else if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         const direction = event.deltaY < 0 ? 1 : -1;
         stepReprojectionPointSize(direction);
@@ -1996,7 +2265,10 @@ window.addEventListener("keydown", event => {
     }
     // Preserve caret/number-field behavior, but intentionally capture arrows
     // even when the registered-image dropdown still has focus.
-    if (document.activeElement.tagName === "INPUT") {
+    const keyTarget = event.target;
+    if (keyTarget instanceof HTMLInputElement
+            || keyTarget instanceof HTMLTextAreaElement
+            || keyTarget.isContentEditable) {
         return;
     }
     if (event.key === "ArrowLeft") {

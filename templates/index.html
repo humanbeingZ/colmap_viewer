@@ -94,8 +94,57 @@
                                 class="reprojection-reset-view">
                             Reset divider
                         </button>
+                        <button id="reprojection-reset-clipping" type="button"
+                                class="reprojection-reset-view">
+                            Reset clipping planes
+                        </button>
                     </div>
                     <div class="reprojection-primary-options">
+                        <div class="reprojection-option-grid">
+                            <div class="reprojection-field">
+                                <label for="reprojection-left-source-trigger">
+                                    Left pane <kbd>t</kbd>
+                                </label>
+                                <div id="reprojection-left-source-picker"
+                                     class="reprojection-source-picker">
+                                    <button id="reprojection-left-source-trigger"
+                                            class="reprojection-source-trigger"
+                                            type="button" aria-haspopup="menu"
+                                            aria-expanded="false">
+                                        <span>COLMAP points</span>
+                                        <span aria-hidden="true">▾</span>
+                                    </button>
+                                    <div class="reprojection-source-menu"
+                                         role="menu" hidden></div>
+                                </div>
+                                <select id="reprojection-left-source" hidden
+                                        aria-hidden="true" tabindex="-1">
+                                    <option value="colmap">COLMAP points</option>
+                                </select>
+                            </div>
+                            <div class="reprojection-field">
+                                <label for="reprojection-right-source-trigger">
+                                    Right pane <kbd>y</kbd>
+                                </label>
+                                <div id="reprojection-right-source-picker"
+                                     class="reprojection-source-picker">
+                                    <button id="reprojection-right-source-trigger"
+                                            class="reprojection-source-trigger"
+                                            type="button" aria-haspopup="menu"
+                                            aria-expanded="false">
+                                        <span>Camera image</span>
+                                        <span aria-hidden="true">▾</span>
+                                    </button>
+                                    <div class="reprojection-source-menu"
+                                         role="menu" hidden></div>
+                                </div>
+                                <select id="reprojection-right-source" hidden
+                                        aria-hidden="true" tabindex="-1">
+                                    <option value="image">Camera image</option>
+                                    <option value="colmap">COLMAP points</option>
+                                </select>
+                            </div>
+                        </div>
                         <div id="reprojection-mesh-color-field"
                              class="reprojection-field reprojection-inline-field" hidden>
                             <label for="reprojection-mesh-color">Mesh colors:</label>
@@ -117,19 +166,6 @@
                     <summary>Comparison</summary>
                     <div class="reprojection-disclosure-content">
                         <div class="reprojection-option-grid">
-                            <div class="reprojection-field">
-                                <label for="reprojection-left-source">Left pane <kbd>t</kbd></label>
-                                <select id="reprojection-left-source">
-                                    <option value="colmap">COLMAP points</option>
-                                </select>
-                            </div>
-                            <div class="reprojection-field">
-                                <label for="reprojection-right-source">Right pane <kbd>y</kbd></label>
-                                <select id="reprojection-right-source">
-                                    <option value="image">Camera image</option>
-                                    <option value="colmap">COLMAP points</option>
-                                </select>
-                            </div>
                             <div class="reprojection-field">
                                 <label for="reprojection-layout">Layout</label>
                                 <select id="reprojection-layout">
@@ -215,6 +251,10 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="reprojection-hint">
+                            Alt + wheel: far clipping plane<br>
+                            Shift + Alt + wheel: near clipping plane
+                        </div>
                     </div>
                 </details>
 
@@ -296,6 +336,9 @@
     <script src="/static/js/reprojection/api.js"></script>
     <script src="/static/js/reprojection/split.js"></script>
     <script src="/static/js/reprojection/pane_sources.js"></script>
+    <script src="/static/js/reprojection/source_picker.js"></script>
+    <script src="/static/js/reprojection/latest_task.js"></script>
+    <script src="/static/js/reprojection/clipping_scroll.js"></script>
     <script src="/static/js/reprojection/point_size.js"></script>
     <script src="/static/js/reprojection/interaction.js"></script>
     <script src="/static/js/reprojection/point_request.js"></script>
