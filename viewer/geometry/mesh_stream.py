@@ -9,8 +9,11 @@ import numpy as np
 from plyfile import PlyData
 
 
-_CHUNK_HEADER = struct.Struct("<4sII")
-_CHUNK_MAGIC = b"CVM1"
+_CHUNK_HEADER = struct.Struct("<4sIII")
+_DRAW_RECORD = struct.Struct("<II6f")
+_CHUNK_MAGIC = b"CVM2"
+
+
 @dataclass(frozen=True)
 class StreamablePlyMesh:
     """A fixed-record binary PLY that can be remapped into local mesh chunks."""
@@ -23,12 +26,16 @@ class StreamablePlyMesh:
     vertex_dtype: np.dtype
     face_dtype: np.dtype
     chunk_face_count: int = 2_000_000
+    draw_face_count: int = 100_000
 
     @classmethod
     def inspect(
-        cls, path: str, chunk_face_count: int = 2_000_000
+        cls, path: str, chunk_face_count: int = 2_000_000,
+        draw_face_count: int = 100_000,
     ) -> Optional["StreamablePlyMesh"]:
         """Return a stream source when the PLY has a fixed triangle layout."""
+        if chunk_face_count <= 0 or draw_face_count <= 0:
+            raise ValueError("Mesh chunk and draw sizes must be positive")
         try:
             with open(path, "rb") as source:
                 schema = PlyData._parse_header(source)
@@ -76,6 +83,7 @@ class StreamablePlyMesh:
             vertex_dtype=vertex_dtype,
             face_dtype=face_dtype,
             chunk_face_count=chunk_face_count,
+            draw_face_count=draw_face_count,
         )
 
     @property
@@ -84,10 +92,11 @@ class StreamablePlyMesh:
 
     def manifest(self) -> dict:
         return {
-            "format": "CVM1",
+            "format": "CVM2",
             "vertex_count": self.vertex_count,
             "face_count": self.face_count,
             "chunk_face_count": self.chunk_face_count,
+            "draw_face_count": self.draw_face_count,
             "chunk_count": self.chunk_count,
         }
 
@@ -140,14 +149,29 @@ class StreamablePlyMesh:
             colors = np.clip(colors, 0, 255).astype(np.uint8)
         else:
             colors = np.full((len(selected), 3), 255, dtype=np.uint8)
-        local_indices = local_indices.astype("<u4", copy=False)
+        local_indices = local_indices.astype("<u4", copy=False).reshape(-1, 3)
+        draw_records = []
+        for draw_start in range(0, len(local_indices), self.draw_face_count):
+            draw_stop = min(len(local_indices), draw_start + self.draw_face_count)
+            draw_vertices = positions[
+                local_indices[draw_start:draw_stop].reshape(-1)
+            ]
+            minimum = draw_vertices.min(axis=0)
+            maximum = draw_vertices.max(axis=0)
+            draw_records.append(_DRAW_RECORD.pack(
+                draw_start,
+                draw_stop - draw_start,
+                *minimum,
+                *maximum,
+            ))
         header = _CHUNK_HEADER.pack(
-            _CHUNK_MAGIC, len(selected), stop - start
+            _CHUNK_MAGIC, len(selected), stop - start, len(draw_records)
         )
         color_bytes = np.ascontiguousarray(colors).tobytes()
         color_padding = b"\0" * (-len(color_bytes) % 4)
         return b"".join((
             header,
+            *draw_records,
             np.ascontiguousarray(positions).tobytes(),
             color_bytes,
             color_padding,

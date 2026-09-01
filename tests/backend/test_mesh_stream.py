@@ -29,18 +29,36 @@ class MeshStreamTest(unittest.TestCase):
     def test_triangle_mesh_is_remapped_into_bounded_chunks(self):
         with tempfile.NamedTemporaryFile(suffix=".ply") as source:
             self.write_mesh(source.name, [[0, 1, 2], [0, 2, 3], [1, 2, 3]])
-            mesh = StreamablePlyMesh.inspect(source.name, chunk_face_count=2)
+            mesh = StreamablePlyMesh.inspect(
+                source.name, chunk_face_count=2, draw_face_count=1
+            )
 
             self.assertIsNotNone(mesh)
+            self.assertEqual(mesh.manifest()["format"], "CVM2")
             self.assertEqual(mesh.manifest()["chunk_count"], 2)
+            self.assertEqual(mesh.manifest()["draw_face_count"], 1)
             payload = mesh.encode_chunk(0)
 
-        magic, vertex_count, face_count = struct.unpack_from("<4sII", payload)
-        self.assertEqual((magic, vertex_count, face_count), (b"CVM1", 4, 2))
-        position_end = 12 + vertex_count * 12
+        magic, vertex_count, face_count, draw_count = struct.unpack_from(
+            "<4sIII", payload
+        )
+        self.assertEqual(
+            (magic, vertex_count, face_count, draw_count), (b"CVM2", 4, 2, 2)
+        )
+        records = [
+            struct.unpack_from("<II6f", payload, 16 + index * 32)
+            for index in range(draw_count)
+        ]
+        self.assertEqual([record[:2] for record in records], [(0, 1), (1, 1)])
+        np.testing.assert_array_equal(records[0][2:], [0, 0, 0, 1, 1, 0])
+        np.testing.assert_array_equal(records[1][2:], [0, 0, 0, 1, 1, 0])
+        position_offset = 16 + draw_count * 32
+        position_end = position_offset + vertex_count * 12
         color_end = position_end + vertex_count * 3
         index_offset = (color_end + 3) & ~3
-        positions = np.frombuffer(payload, "<f4", vertex_count * 3, 12).reshape(-1, 3)
+        positions = np.frombuffer(
+            payload, "<f4", vertex_count * 3, position_offset
+        ).reshape(-1, 3)
         colors = np.frombuffer(payload, "u1", vertex_count * 3, position_end).reshape(-1, 3)
         indices = np.frombuffer(
             payload, "<u4", face_count * 3, index_offset

@@ -1864,7 +1864,10 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         await renderer.renderGeometry(
             reprojectionState.leftSource,
             image, renderSize.width, renderSize.height, region,
-            confineGeometryToImageFrame()
+            confineGeometryToImageFrame(),
+            () => frameRequest === reprojectionState.gpuFrameRequest
+                && generation === reprojectionState.generation
+                && reprojectionState.renderMode === "gpu"
         );
         if (frameRequest !== reprojectionState.gpuFrameRequest
                 || generation !== reprojectionState.generation

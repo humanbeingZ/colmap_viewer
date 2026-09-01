@@ -421,16 +421,19 @@ export class ReprojectionGpuRenderer {
                         + `HTTP ${response.status}`
                     );
                 }
-                const geometry = ReprojectionGpuRenderer.parseMeshChunk(
-                    await response.arrayBuffer()
+                const meshChunk = ReprojectionGpuRenderer.createMeshChunk(
+                    await response.arrayBuffer(), material
                 );
-                const mesh = new THREE.Mesh(geometry, material);
                 // Manual chunk AABB culling is applied before real renders.
                 // Disable the default sphere test here so compileAsync always
                 // uploads the chunk, regardless of the preparation camera.
-                mesh.frustumCulled = false;
-                chunks[chunkIndex] = mesh;
-                queueGpuPreparation(mesh);
+                meshChunk.traverse(node => {
+                    if (node.isMesh) {
+                        node.frustumCulled = false;
+                    }
+                });
+                chunks[chunkIndex] = meshChunk;
+                queueGpuPreparation(meshChunk);
             }
         };
         // The local FastAPI endpoint encodes chunks in its thread pool, and
@@ -463,8 +466,9 @@ export class ReprojectionGpuRenderer {
             throw error;
         }
         chunks.forEach(chunk => group.add(chunk));
+        group.userData.streamedMesh = true;
         const bounds = new THREE.Box3();
-        chunks.forEach(chunk => bounds.union(chunk.geometry.boundingBox));
+        chunks.forEach(chunk => bounds.union(chunk.userData.boundingBox));
         group.userData.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
         const key = this.installObject(group, "triangle mesh");
         return {
@@ -477,20 +481,50 @@ export class ReprojectionGpuRenderer {
         };
     }
 
-    static parseMeshChunk(bytes) {
+    static createMeshChunk(bytes, material) {
         const chunk = parseMeshChunk(bytes);
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(
-            chunk.positions, 3
-        ));
-        geometry.setAttribute("color", new THREE.BufferAttribute(
-            chunk.colors, 3, true
-        ));
-        geometry.setIndex(new THREE.BufferAttribute(
-            chunk.indices, 1
-        ));
-        geometry.computeBoundingBox();
-        return geometry;
+        const position = new THREE.BufferAttribute(chunk.positions, 3);
+        const color = new THREE.BufferAttribute(chunk.colors, 3, true);
+        const index = new THREE.BufferAttribute(chunk.indices, 1);
+        const root = new THREE.Group();
+        const bounds = new THREE.Box3();
+        const draws = chunk.draws.length ? chunk.draws : [{
+            faceStart: 0,
+            faceCount: chunk.faceCount,
+            minimum: null,
+            maximum: null,
+        }];
+        const fineMeshes = draws.map(draw => {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute("position", position);
+            geometry.setAttribute("color", color);
+            const indexStart = draw.faceStart * 3;
+            geometry.setIndex(index);
+            geometry.setDrawRange(indexStart, draw.faceCount * 3);
+            if (draw.minimum && draw.maximum) {
+                geometry.boundingBox = new THREE.Box3(
+                    new THREE.Vector3(...draw.minimum),
+                    new THREE.Vector3(...draw.maximum)
+                );
+            } else {
+                geometry.computeBoundingBox();
+            }
+            bounds.union(geometry.boundingBox);
+            return new THREE.Mesh(geometry, material);
+        });
+        const coarseGeometry = new THREE.BufferGeometry();
+        coarseGeometry.setAttribute("position", position);
+        coarseGeometry.setAttribute("color", color);
+        coarseGeometry.setIndex(index);
+        coarseGeometry.boundingBox = bounds.clone();
+        const coarseMesh = new THREE.Mesh(coarseGeometry, material);
+        const fineGroup = new THREE.Group();
+        fineMeshes.forEach(mesh => fineGroup.add(mesh));
+        root.add(coarseMesh, fineGroup);
+        root.userData.boundingBox = bounds;
+        root.userData.coarseMesh = coarseMesh;
+        root.userData.fineMeshes = fineMeshes;
+        return root;
     }
 
     loadArrayBuffer(bytes, kind, isCurrent = () => true) {
@@ -792,6 +826,37 @@ export class ReprojectionGpuRenderer {
             this.camera.coordinateSystem,
             this.camera.reversedDepth
         );
+        if (this.object.userData.streamedMesh) {
+            for (const chunk of this.object.children) {
+                const {coarseMesh, fineMeshes} = chunk.userData;
+                this.chunkWorldBounds.copy(chunk.userData.boundingBox)
+                    .applyMatrix4(chunk.matrixWorld);
+                if (!this.meshFrustum.intersectsBox(this.chunkWorldBounds)) {
+                    coarseMesh.visible = false;
+                    fineMeshes.forEach(mesh => {
+                        mesh.visible = false;
+                    });
+                    continue;
+                }
+                let visibleCount = 0;
+                fineMeshes.forEach(mesh => {
+                    this.chunkWorldBounds.copy(mesh.geometry.boundingBox)
+                        .applyMatrix4(mesh.matrixWorld);
+                    mesh.visible = this.meshFrustum.intersectsBox(
+                        this.chunkWorldBounds
+                    );
+                    visibleCount += mesh.visible ? 1 : 0;
+                });
+                const useCoarseDraw = visibleCount === fineMeshes.length;
+                coarseMesh.visible = useCoarseDraw;
+                if (useCoarseDraw) {
+                    fineMeshes.forEach(mesh => {
+                        mesh.visible = false;
+                    });
+                }
+            }
+            return;
+        }
         this.object.traverse(node => {
             if (!node.isMesh || !node.geometry?.boundingBox) {
                 return;
@@ -831,13 +896,18 @@ export class ReprojectionGpuRenderer {
     }
 
     renderGeometry(
-        key, image, width, height, region = null, clipFrame = false
+        key, image, width, height, region = null, clipFrame = false,
+        isCurrent = () => true
     ) {
         return this.runGpuOperation(async () => {
+            if (!isCurrent()) {
+                return false;
+            }
             const previousKey = this.activeKey;
             this.activateGeometry(key);
             try {
                 await this._render(image, width, height, region, clipFrame);
+                return isCurrent();
             } finally {
                 if (previousKey !== key && this.geometries.has(previousKey)) {
                     this.activateGeometry(previousKey);

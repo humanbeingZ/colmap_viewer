@@ -112,4 +112,22 @@ function rendererHarness() {
     assert.equal(instances.length, 2);
 }
 
+{
+    const renderer = rendererHarness();
+    renderer._operationQueue = Promise.resolve();
+    renderer.activeKey = "mesh";
+    renderer.geometries.set("mesh", {});
+    let renders = 0;
+    renderer.activateGeometry = () => {};
+    renderer._render = async () => {
+        renders += 1;
+    };
+
+    const rendered = await renderer.renderGeometry(
+        "mesh", {}, 640, 480, null, false, () => false
+    );
+    assert.equal(rendered, false);
+    assert.equal(renders, 0);
+}
+
 console.log("GPU renderer lifecycle tests passed");
