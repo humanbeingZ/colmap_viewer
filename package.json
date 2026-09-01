@@ -2,11 +2,14 @@
   "name": "colmap-viewer-frontend",
   "private": true,
   "scripts": {
-    "build": "esbuild static/js/reprojection/gpu_renderer.js --bundle --format=iife --global-name=ReprojectionGpu --outfile=static/vendor/reprojection_gpu.js --target=es2022",
+    "build": "node scripts/build_frontend.mjs",
     "test": "for test_file in tests/frontend/*.test.js tests/frontend/*.test.mjs; do node \"$test_file\"; done"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
-    "three": "github:mrdoob/three.js#dev"
+    "three": "https://github.com/mrdoob/three.js/archive/f4af62eaa39dc368663f7b4fe64a731ae16cf664.tar.gz"
+  },
+  "dependencies": {
+    "playcanvas": "2.21.4"
   }
 }

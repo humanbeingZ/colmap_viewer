@@ -17,19 +17,16 @@ assert.equal(meshBrightness(4), 3);
 assert.equal(meshBrightness(1.4), 1.4);
 assert.deepEqual(meshMaterialDescription("face", "vertex", true), {
     lit: true,
-    flatShading: true,
     vertexColors: true,
     color: 0xffffff,
 });
 assert.deepEqual(meshMaterialDescription("face", "solid", true), {
     lit: true,
-    flatShading: true,
     vertexColors: false,
     color: 0xc0c0c0,
 });
 assert.deepEqual(meshMaterialDescription("none", "vertex", false), {
     lit: false,
-    flatShading: false,
     vertexColors: false,
     color: 0xc0c0c0,
 });

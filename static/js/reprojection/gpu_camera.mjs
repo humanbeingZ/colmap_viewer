@@ -56,7 +56,10 @@ export function depthRangeForSphere(distance, radius, reversedDepth = false) {
     // substantially wider range than the WebGL fallback.
     const nearFloor = Math.max(
         1e-5,
-        scale * (reversedDepth ? 1e-6 : 1e-4)
+        // Conventional fixed-point depth needs a materially tighter ratio
+        // than reversed floating-point depth. A relative 0.1% near plane
+        // matches desktop mesh viewers while remaining scale-independent.
+        scale * (reversedDepth ? 1e-6 : 1e-3)
     );
     const nearest = safeDistance - safeRadius;
     const near = nearest > nearFloor
@@ -82,6 +85,22 @@ export function clippedDepthRange(
     return {
         near: Number(range.near) + span * nearRatio,
         far: Number(range.near) + span * farRatio,
+    };
+}
+
+export function depthRangesForClipping(
+    range, nearFraction = 0, farFraction = 1,
+    stableProjection = false
+) {
+    const clipping = clippedDepthRange(range, nearFraction, farFraction);
+    return {
+        clipping,
+        // Mesh clipping uses separate planes, so its projection must remain
+        // invariant as the sliders move. Other renderers still clip through
+        // their projection matrix and therefore use the narrowed range.
+        projection: stableProjection
+            ? {near: Number(range.near), far: Number(range.far)}
+            : clipping,
     };
 }
 

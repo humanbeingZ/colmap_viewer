@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {PerspectiveCamera, Vector3} from "three";
 import {
     clippedDepthRange,
+    depthRangesForClipping,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,
@@ -49,7 +50,7 @@ assert.deepEqual(depthRangeForSphere(20, 2, false), {
     far: 22.1,
 });
 const enclosingRange = depthRangeForSphere(2, 10, false);
-assert.equal(enclosingRange.near, 0.001);
+assert.equal(enclosingRange.near, 0.01);
 assert.equal(enclosingRange.far, 12.5);
 assert.equal(depthRangeForSphere(2, 10, true).near, 0.00001);
 assert.deepEqual(clippedDepthRange({near: 10, far: 110}, 0.2, 0.8), {
@@ -62,6 +63,20 @@ assert.deepEqual(clippedDepthRange({near: 10, far: 110}, -1, 2), {
 });
 const minimumClipRange = clippedDepthRange({near: 1, far: 101}, 0.9, 0.1);
 assert.ok(minimumClipRange.far > minimumClipRange.near);
+
+const stableMeshRanges = depthRangesForClipping(
+    {near: 0.01, far: 20}, 0.1, 0.6, true
+);
+assert.deepEqual(stableMeshRanges.projection, {near: 0.01, far: 20});
+assert.deepEqual(
+    stableMeshRanges.clipping,
+    clippedDepthRange({near: 0.01, far: 20}, 0.1, 0.6)
+);
+assert.notDeepEqual(stableMeshRanges.clipping, stableMeshRanges.projection);
+const projectedClipRanges = depthRangesForClipping(
+    {near: 0.01, far: 20}, 0.1, 0.6, false
+);
+assert.deepEqual(projectedClipRanges.projection, projectedClipRanges.clipping);
 
 const detailImage = {width: 6000, height: 4000};
 assert.equal(zoomDetailMaxSize(detailImage, 1600, 1), 1600);

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import hashlib
 import ipaddress
 import os
 from pathlib import Path
@@ -21,6 +22,22 @@ from .reprojection.core import (
 
 colmap_service: ColmapService
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _static_asset_version(static_root: Path) -> str:
+    """Return a deterministic cache key for every served static asset."""
+    digest = hashlib.sha256()
+    assets = (path for path in static_root.rglob("*") if path.is_file())
+    for path in sorted(assets):
+        relative_path = path.relative_to(static_root).as_posix()
+        digest.update(f"{relative_path}\0{path.stat().st_size}\0".encode("utf-8"))
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()[:12]
+
+
+STATIC_ASSET_VERSION = _static_asset_version(PROJECT_ROOT / "static")
 
 
 def configure_service(service: ColmapService) -> None:
@@ -71,6 +88,7 @@ async def read_root(request: Request):
             "request": request,
             "default_pose_neighbors": ColmapService.DEFAULT_POSE_NEIGHBORS,
             "max_pose_neighbors": ColmapService.MAX_POSE_NEIGHBORS,
+            "static_asset_version": STATIC_ASSET_VERSION,
         },
     )
 

@@ -1,9 +1,6 @@
 import * as THREE from "three/webgpu";
-import {GaussianSplatPLYLoader} from "three/addons/loaders/GaussianSplatPLYLoader.js";
 import {PLYLoader} from "three/addons/loaders/PLYLoader.js";
-import {GaussianSplat} from "three/addons/objects/GaussianSplat.js";
 import {
-    Fn,
     normalView,
     sRGBTransferEOTF,
     texture,
@@ -16,6 +13,7 @@ import {
 
 import {
     clippedDepthRange,
+    depthRangesForClipping,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,
@@ -37,7 +35,21 @@ import {
     meshShading,
 } from "./gpu_mesh_appearance.mjs";
 import {normalizeGeometryAttributesForGpu} from "./gpu_geometry.mjs";
+import {
+    DEFAULT_GAUSSIAN_SPLAT_FILTER,
+    gaussianSplatFilter,
+} from "./gpu_gaussian_filter.mjs";
 import {parseMeshChunk} from "./gpu_mesh_chunk.mjs";
+
+const PLAYCANVAS_RENDERER_MODULE =
+    "/static/vendor/playcanvas_gaussian_renderer.js";
+
+function playcanvasRendererModuleUrl() {
+    const version = globalThis.REPROJECTION_ASSET_VERSION;
+    return version
+        ? `${PLAYCANVAS_RENDERER_MODULE}?v=${encodeURIComponent(version)}`
+        : PLAYCANVAS_RENDERER_MODULE;
+}
 
 function disposeObject(object) {
     if (!object) {
@@ -67,34 +79,48 @@ function formatFileSize(bytes) {
     return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
 
-function useDisplayEncodedGaussianColors(object) {
-    const material = object?.material;
-    const gaussianFragment = material?.colorNode;
-    if (!gaussianFragment) {
+// Three.js gives explicit offscreen render targets a `depth24plus` attachment.
+// Upgrade the comparison/capture targets we own before their first use so
+// they retain floating-point depth precision. Do not replace the renderer's
+// private on-screen framebuffer attachment: mutating that internal target can
+// invalidate an already cached WebGPU render pass and drop the graphics device.
+function forceFloatDepthTarget(target) {
+    if (!target || target.depthBuffer === false) {
         return;
     }
-    // GraphDECO-style training and reference renderers operate directly on
-    // numeric image RGB even though those values conventionally originate in
-    // sRGB images. Three's Gaussian material treats the SH result as physical
-    // linear light, so its output pass brightens it a second time. Evaluate
-    // all SH bands first, then decode once so the final output encode restores
-    // the original/reference RGB numbers.
-    material.colorNode = Fn(() => {
-        const splat = vec4(gaussianFragment).toVar("displayEncodedSplat");
-        return vec4(sRGBTransferEOTF(splat.rgb), splat.a);
-    })();
-    material.needsUpdate = true;
+    const width = Math.max(1, target.width | 0);
+    const height = Math.max(1, target.height | 0);
+    // The depth attachment must match the owning target's sample count; a
+    // single-sample depth texture on an MSAA comparison target makes the render
+    // pass invalid on strict WebGPU backends.
+    const samples = Math.max(0, target.samples | 0);
+    if (!target.depthTexture) {
+        target.depthTexture = new THREE.DepthTexture(width, height);
+    }
+    const depthTexture = target.depthTexture;
+    depthTexture.type = THREE.FloatType;
+    depthTexture.image.width = width;
+    depthTexture.image.height = height;
+    depthTexture.samples = samples;
 }
 
 export class ReprojectionGpuRenderer {
-    constructor(canvas) {
+    constructor(canvas, gaussianCanvas = null) {
         this.canvas = canvas;
+        this.gaussianCanvas = gaussianCanvas;
+        // PlayCanvas owns a separate graphics device. Creating it eagerly can
+        // destabilize or exhaust the Three.js WebGPU device even when the
+        // selected geometry is an ordinary mesh. Initialize it only after a
+        // Gaussian PLY has actually been detected.
+        this.gaussianRenderer = null;
+        this.gaussianRendererPromise = null;
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera();
         this.camera.matrixAutoUpdate = false;
         this.camera.matrixWorldAutoUpdate = false;
         this.meshFrustum = new THREE.Frustum();
         this.projectionViewMatrix = new THREE.Matrix4();
+        this.cullProjectionMatrix = new THREE.Matrix4();
         this.chunkWorldBounds = new THREE.Box3();
         this.geometries = new Map();
         this.activeKey = null;
@@ -105,6 +131,7 @@ export class ReprojectionGpuRenderer {
         this.meshShading = DEFAULT_MESH_SHADING;
         this.meshColor = DEFAULT_MESH_COLOR;
         this.meshBrightness = DEFAULT_MESH_BRIGHTNESS;
+        this.gaussianSplatFilter = {...DEFAULT_GAUSSIAN_SPLAT_FILTER};
         this.nearClipFraction = 0;
         this.farClipFraction = 1;
         this.clippingReferenceKey = null;
@@ -118,7 +145,11 @@ export class ReprojectionGpuRenderer {
             canvas,
             antialias: true,
             alpha: true,
-            reversedDepthBuffer: true,
+            // Match MeshLab's conventional depth direction. Reversed-Z is
+            // attractive for large worlds, but this viewer already fits the
+            // projection to each mesh and its WebGPU path produced incorrect
+            // winners for closely layered surfaces in dense meshes.
+            reversedDepthBuffer: false,
             // The viewer displays ordinary 8-bit imagery. Avoid a half-float
             // color target whose memory cost becomes excessive when zoom
             // detail raises the canvas backing resolution.
@@ -126,6 +157,52 @@ export class ReprojectionGpuRenderer {
         });
         this.ready = this.renderer.init();
         this._operationQueue = Promise.resolve();
+    }
+
+    async ensureGaussianRenderer() {
+        if (this.gaussianRenderer) {
+            return this.gaussianRenderer;
+        }
+        if (!this.gaussianCanvas) {
+            throw new Error(
+                "The dedicated PlayCanvas Gaussian canvas is unavailable"
+            );
+        }
+        if (!this.gaussianRendererPromise) {
+            this.gaussianRendererPromise = this._createGaussianRenderer()
+                .then(renderer => {
+                    this.gaussianRenderer = renderer;
+                    return renderer;
+                })
+                .catch(error => {
+                    this.gaussianRenderer = null;
+                    this.gaussianRendererPromise = null;
+                    throw error;
+                });
+        }
+        return this.gaussianRendererPromise;
+    }
+
+    async _loadGaussianRendererClass() {
+        const module = await import(playcanvasRendererModuleUrl());
+        return module.PlayCanvasGaussianRenderer;
+    }
+
+    async _createGaussianRenderer() {
+        const PlayCanvasGaussianRenderer =
+            await this._loadGaussianRendererClass();
+        const renderer = new PlayCanvasGaussianRenderer(this.gaussianCanvas);
+        try {
+            await renderer.ready;
+            renderer.setClippingRange(
+                this.nearClipFraction, this.farClipFraction
+            );
+            renderer.setSplatFilter(this.gaussianSplatFilter);
+            return renderer;
+        } catch (error) {
+            renderer.destroy();
+            throw error;
+        }
     }
 
     runGpuOperation(operation) {
@@ -138,6 +215,8 @@ export class ReprojectionGpuRenderer {
         if (!this._comparisonLeftTarget) {
             this._comparisonLeftTarget = new THREE.RenderTarget(width, height);
             this._comparisonRightTarget = new THREE.RenderTarget(width, height);
+            forceFloatDepthTarget(this._comparisonLeftTarget);
+            forceFloatDepthTarget(this._comparisonRightTarget);
             const leftColor = texture(
                 this._comparisonLeftTarget.texture, viewportUV
             );
@@ -176,10 +255,9 @@ export class ReprojectionGpuRenderer {
             vertexColors: false,
             side: THREE.FrontSide,
         };
-        const material = new THREE.MeshBasicNodeMaterial({
-            ...options,
-            flatShading: description.flatShading,
-        });
+        // Face shading below is derived directly from position derivatives;
+        // MeshBasicNodeMaterial does not expose the legacy flatShading flag.
+        const material = new THREE.MeshBasicNodeMaterial(options);
         const sourceSrgb = description.vertexColors
             ? vertexColor().rgb
             : vec3(192 / 255);
@@ -230,6 +308,13 @@ export class ReprojectionGpuRenderer {
     async loadFile(file, expectedKind = null, isCurrent = () => true) {
         await this.ready;
         const kind = expectedKind || await ReprojectionGpuRenderer.inspectFile(file);
+        if (kind === "gaussian splats") {
+            const renderer = await this.ensureGaussianRenderer();
+            const loaded = await renderer.loadFile(
+                file, isCurrent
+            );
+            return loaded && this.installGaussian(loaded);
+        }
         let bytes;
         try {
             bytes = await file.arrayBuffer();
@@ -243,22 +328,46 @@ export class ReprojectionGpuRenderer {
         return this.loadArrayBuffer(bytes, kind, isCurrent);
     }
 
-    async loadUrl(url, fileSize, isCurrent = () => true) {
+    async loadUrl(
+        url, fileSize, isCurrent = () => true, filename = "geometry.ply"
+    ) {
         await this.ready;
-        const response = await fetch(url, {cache: "no-store"});
+        const response = await fetch(url, {
+            cache: "no-store",
+            headers: {Range: "bytes=0-1048575"},
+        });
         if (!response.ok) {
             throw new Error(`Unable to read configured geometry: HTTP ${response.status}`);
         }
-        let bytes;
+        let inspectionBytes;
         try {
-            bytes = await response.arrayBuffer();
+            inspectionBytes = await response.arrayBuffer();
         } catch (error) {
             const message = `The browser could not buffer ${formatFileSize(fileSize)} `
                 + "of configured geometry. Simplify or partition the file.";
             throw new Error(message, {cause: error});
         }
-        const header = new TextDecoder().decode(bytes.slice(0, 1024 * 1024));
+        const header = new TextDecoder().decode(
+            inspectionBytes.slice(0, 1024 * 1024)
+        );
         const kind = ReprojectionGpuRenderer.inspectHeader(header);
+        if (kind === "gaussian splats") {
+            const renderer = await this.ensureGaussianRenderer();
+            const loaded = await renderer.loadUrl(
+                url, filename, isCurrent
+            );
+            return loaded && this.installGaussian(loaded);
+        }
+        let bytes = inspectionBytes;
+        if (response.status === 206) {
+            const fullResponse = await fetch(url, {cache: "no-store"});
+            if (!fullResponse.ok) {
+                throw new Error(
+                    `Unable to read configured geometry: HTTP ${fullResponse.status}`
+                );
+            }
+            bytes = await fullResponse.arrayBuffer();
+        }
         return this.loadArrayBuffer(bytes, kind, isCurrent);
     }
 
@@ -271,7 +380,7 @@ export class ReprojectionGpuRenderer {
         }
         this.configureCamera(image);
         const material = this.createMeshMaterial(true);
-        const group = new THREE.Group();
+        const group = this.createMeshClippingGroup();
         const chunks = new Array(manifest.chunk_count);
         const controller = new AbortController();
         let nextChunk = 0;
@@ -362,6 +471,9 @@ export class ReprojectionGpuRenderer {
             kind: "triangle mesh",
             count: manifest.vertex_count,
             key,
+            // Every chunk was compiled above before it was installed. Tell
+            // the caller not to compile the complete group a second time.
+            gpuPrepared: true,
         };
     }
 
@@ -382,16 +494,16 @@ export class ReprojectionGpuRenderer {
     }
 
     loadArrayBuffer(bytes, kind, isCurrent = () => true) {
+        if (kind === "gaussian splats") {
+            return this.ensureGaussianRenderer()
+                .then(renderer => renderer.loadArrayBuffer(bytes, isCurrent))
+                .then(loaded => loaded && this.installGaussian(loaded));
+        }
         let geometry;
         let object;
-        if (kind === "gaussian splats") {
-            geometry = new GaussianSplatPLYLoader().parse(bytes);
-            object = new GaussianSplat(geometry);
-            useDisplayEncodedGaussianColors(object);
-        } else {
-            geometry = new PLYLoader().parse(bytes);
-            normalizeGeometryAttributesForGpu(geometry);
-            if (kind === "triangle mesh") {
+        geometry = new PLYLoader().parse(bytes);
+        normalizeGeometryAttributesForGpu(geometry);
+        if (kind === "triangle mesh") {
                 // Remove any PLY vertex normals so normalView is computed from
                 // position derivatives, giving true per-face flat shading.
                 geometry.deleteAttribute("normal");
@@ -399,17 +511,16 @@ export class ReprojectionGpuRenderer {
                     geometry,
                     this.createMeshMaterial(Boolean(geometry.getAttribute("color")))
                 );
-            } else {
-                object = new THREE.Points(
-                    geometry,
-                    new THREE.PointsMaterial({
-                        color: geometry.getAttribute("color") ? 0xffffff : 0xb0b0b0,
-                        vertexColors: Boolean(geometry.getAttribute("color")),
-                        size: this.pointSize,
-                        sizeAttenuation: false,
-                    })
-                );
-            }
+        } else {
+            object = new THREE.Points(
+                geometry,
+                new THREE.PointsMaterial({
+                    color: geometry.getAttribute("color") ? 0xffffff : 0xb0b0b0,
+                    vertexColors: Boolean(geometry.getAttribute("color")),
+                    size: this.pointSize,
+                    sizeAttenuation: false,
+                })
+            );
         }
         geometry.computeBoundingSphere();
         if (!isCurrent()) {
@@ -426,11 +537,58 @@ export class ReprojectionGpuRenderer {
 
     installObject(object, kind) {
         const key = String(this._nextId++);
+        if (kind === "triangle mesh" && !object.isClippingGroup) {
+            const mesh = object;
+            object = this.createMeshClippingGroup();
+            object.add(mesh);
+            const sphere = mesh.geometry?.boundingSphere;
+            if (sphere) {
+                object.userData.boundingSphere = sphere.clone();
+            }
+        }
         object.visible = false;
         this.scene.add(object);
-        this.geometries.set(key, {object, kind});
+        this.geometries.set(key, {object, kind, engine: "three"});
         this.activateGeometry(key);
         return key;
+    }
+
+    installGaussian(loaded) {
+        const key = String(this._nextId++);
+        this.geometries.set(key, {
+            adapterKey: loaded.key,
+            count: loaded.count,
+            kind: "gaussian splats",
+            engine: "playcanvas",
+        });
+        this.activateGeometry(key);
+        return {kind: "gaussian splats", count: loaded.count, key};
+    }
+
+    createMeshClippingGroup() {
+        const group = new THREE.ClippingGroup();
+        // Keep the plane count constant while clipping is active so scrolling
+        // only updates uniforms and never recompiles the mesh pipelines.
+        group.clippingPlanes = [new THREE.Plane(), new THREE.Plane()];
+        group.enabled = false;
+        return group;
+    }
+
+    configureMeshClipping(group, near, far) {
+        if (!group?.isClippingGroup) {
+            return;
+        }
+        // Plane distances are evaluated in world space by ClippingGroup. Build
+        // the desired planes in camera/view space, then transform them back to
+        // world space. The retained interval is -far <= viewZ <= -near.
+        group.clippingPlanes[0]
+            .set(new THREE.Vector3(0, 0, -1), -near)
+            .applyMatrix4(this.camera.matrixWorld);
+        group.clippingPlanes[1]
+            .set(new THREE.Vector3(0, 0, 1), far)
+            .applyMatrix4(this.camera.matrixWorld);
+        group.enabled = this.nearClipFraction > 1e-9
+            || this.farClipFraction < 1 - 1e-9;
     }
 
     activateGeometry(key) {
@@ -438,15 +596,21 @@ export class ReprojectionGpuRenderer {
             return;
         }
         const previous = this.geometries.get(this.activeKey);
-        if (previous) {
+        if (previous?.object) {
             previous.object.visible = false;
         }
         const entry = this.geometries.get(key);
-        if (entry) {
+        if (entry?.engine === "playcanvas") {
+            this.gaussianRenderer.activate(entry.adapterKey);
+            this.object = null;
+            this.kind = entry.kind;
+        } else if (entry) {
+            this.gaussianRenderer?.activate(null);
             entry.object.visible = true;
             this.object = entry.object;
             this.kind = entry.kind;
         } else {
+            this.gaussianRenderer?.activate(null);
             this.object = null;
             this.kind = null;
         }
@@ -459,6 +623,10 @@ export class ReprojectionGpuRenderer {
 
     getGeometryKeys() {
         return [...this.geometries.keys()];
+    }
+
+    getGeometryEngine(key) {
+        return this.geometries.get(key)?.engine || null;
     }
 
     prepareGeometry(key, image, isCurrent = () => true) {
@@ -475,6 +643,11 @@ export class ReprojectionGpuRenderer {
         await this.ready;
         if (!isCurrent()) {
             return false;
+        }
+        if (entry.engine === "playcanvas") {
+            this.activateGeometry(key);
+            this.gaussianRenderer.configureCamera(image);
+            return isCurrent();
         }
         const previousKey = this.activeKey;
         this.activateGeometry(key);
@@ -499,6 +672,17 @@ export class ReprojectionGpuRenderer {
     geometryDepthRange(
         entry, viewMatrix = this.camera.matrixWorldInverse
     ) {
+        if (entry?.engine === "playcanvas") {
+            const sphere = this.gaussianRenderer.getSphere(entry.adapterKey);
+            if (!sphere) {
+                return {near: 1e-4, far: 1e7};
+            }
+            const center = new THREE.Vector3(...sphere.center)
+                .applyMatrix4(viewMatrix);
+            return depthRangeForSphere(
+                -center.z, Math.max(sphere.radius, 1e-6), false
+            );
+        }
         const object = entry?.object;
         const sourceGeometry = object?.splatGeometry || object?.geometry;
         const sphere = object?.userData?.boundingSphere
@@ -546,13 +730,24 @@ export class ReprojectionGpuRenderer {
         this.camera.matrixWorld.copy(this.camera.matrixWorldInverse).invert();
         this.camera.matrix.copy(this.camera.matrixWorld);
 
-        let {near, far} = this.clippingDepthRange();
+        const {near, far} = this.clippingDepthRange();
         this.camera.coordinateSystem = this.renderer.coordinateSystem;
         this.camera._reversedDepth = Boolean(this.renderer.reversedDepthBuffer);
-        ({near, far} = clippedDepthRange(
-            {near, far}, this.nearClipFraction, this.farClipFraction
-        ));
-        const frustum = projectionFrustum(image, near, far, region);
+        const stableMeshDepth = this.kind === "triangle mesh";
+        const depthRanges = depthRangesForClipping(
+            {near, far}, this.nearClipFraction, this.farClipFraction,
+            stableMeshDepth
+        );
+        const clipped = depthRanges.clipping;
+        // Mesh clipping must not alter the projection matrix: changing its far
+        // term shifts all quantized depth values and can change the winner for
+        // nearly coplanar triangles. ClippingGroup removes geometry with real
+        // planes while a fixed full-range projection preserves the occlusion
+        // ordering of every surviving fragment.
+        const projectionRange = depthRanges.projection;
+        const frustum = projectionFrustum(
+            image, projectionRange.near, projectionRange.far, region
+        );
         this.camera.near = frustum.near;
         this.camera.far = frustum.far;
         this.camera.projectionMatrix.makePerspective(
@@ -563,7 +758,25 @@ export class ReprojectionGpuRenderer {
         this.camera.projectionMatrixInverse.copy(
             this.camera.projectionMatrix
         ).invert();
+        if (stableMeshDepth) {
+            this.configureMeshClipping(this.object, clipped.near, clipped.far);
+        }
 
+        // Chunk culling must ignore the user's near/far clipping planes: the
+        // ClippingGroup enforces them after chunk selection. Build a separate
+        // culling frustum from the active geometry's full depth extent so a
+        // chunk intersecting a plane is never removed as a whole (which would
+        // otherwise flicker while the plane scrolls through it).
+        const activeEntry = this.geometries.get(this.activeKey);
+        const cullRange = this.geometryDepthRange(activeEntry);
+        const cullFrustum = projectionFrustum(
+            image, cullRange.near, cullRange.far, region
+        );
+        this.cullProjectionMatrix.makePerspective(
+            cullFrustum.left, cullFrustum.right, cullFrustum.top,
+            cullFrustum.bottom, cullFrustum.near, cullFrustum.far,
+            this.camera.coordinateSystem, this.camera.reversedDepth
+        );
     }
 
     cullMeshChunks() {
@@ -572,7 +785,7 @@ export class ReprojectionGpuRenderer {
         }
         this.object.updateMatrixWorld(true);
         this.projectionViewMatrix.multiplyMatrices(
-            this.camera.projectionMatrix, this.camera.matrixWorldInverse
+            this.cullProjectionMatrix, this.camera.matrixWorldInverse
         );
         this.meshFrustum.setFromProjectionMatrix(
             this.projectionViewMatrix,
@@ -634,7 +847,8 @@ export class ReprojectionGpuRenderer {
     }
 
     async _render(image, width, height, region, clipFrame) {
-        if (!this.object) {
+        const entry = this.geometries.get(this.activeKey);
+        if (!entry) {
             return;
         }
         if (!this.supportsCamera(image)) {
@@ -643,6 +857,14 @@ export class ReprojectionGpuRenderer {
             );
         }
         await this.ready;
+        if (entry.engine === "playcanvas") {
+            const clippingPlanes = this.clippingPlanesForImage(image);
+            await this.gaussianRenderer.render(
+                entry.adapterKey, image, width, height, region, clipFrame,
+                clippingPlanes
+            );
+            return;
+        }
         this.configureCamera(image, region);
         this.cullMeshChunks();
         this.renderer.setSize(width, height, false);
@@ -701,6 +923,11 @@ export class ReprojectionGpuRenderer {
     hasComparison(leftKey, rightKey) {
         return this.comparisonKeys?.[0] === leftKey
             && this.comparisonKeys?.[1] === rightKey;
+    }
+
+    supportsComparison(leftKey, rightKey) {
+        return this.geometries.get(leftKey)?.engine === "three"
+            && this.geometries.get(rightKey)?.engine === "three";
     }
 
     renderComparison(
@@ -765,6 +992,7 @@ export class ReprojectionGpuRenderer {
         );
         this.nearClipFraction = range.near;
         this.farClipFraction = range.far;
+        this.gaussianRenderer?.setClippingRange(range.near, range.far);
         const isDefault = this.nearClipFraction <= 1e-9
             && this.farClipFraction >= 1 - 1e-9;
         if (wasDefault && !isDefault) {
@@ -776,6 +1004,20 @@ export class ReprojectionGpuRenderer {
             near: this.nearClipFraction,
             far: this.farClipFraction,
         };
+    }
+
+    // Retain the desired filter independently of the disposable PlayCanvas
+    // engine so recreating that engine cannot reset the visible UI state.
+    setGaussianSplatFilter(options) {
+        this.gaussianSplatFilter = gaussianSplatFilter(
+            this.gaussianSplatFilter, options
+        );
+        this.gaussianRenderer?.setSplatFilter(this.gaussianSplatFilter);
+        return {...this.gaussianSplatFilter};
+    }
+
+    getGaussianSplatFilter() {
+        return {...this.gaussianSplatFilter};
     }
 
     updateMeshMaterial() {
@@ -842,6 +1084,21 @@ export class ReprojectionGpuRenderer {
         if (!entry) {
             return null;
         }
+        if (entry.engine === "playcanvas") {
+            const previousKey = this.activeKey;
+            this.activateGeometry(key);
+            try {
+                const clippingPlanes = this.clippingPlanesForImage(image);
+                return await this.gaussianRenderer.capture(
+                    entry.adapterKey, image, width, height, region, clipFrame,
+                    clippingPlanes
+                );
+            } finally {
+                if (previousKey !== key && this.geometries.has(previousKey)) {
+                    this.activateGeometry(previousKey);
+                }
+            }
+        }
         const previousKey = this.activeKey;
         this.activateGeometry(key);
         try {
@@ -855,6 +1112,7 @@ export class ReprojectionGpuRenderer {
                     this._captureTarget.dispose();
                 }
                 this._captureTarget = new THREE.RenderTarget(width, height);
+                forceFloatDepthTarget(this._captureTarget);
             }
             const previousRenderTarget = this.renderer.getRenderTarget();
             const previousOutputTarget = this.renderer.getOutputRenderTarget();
@@ -910,25 +1168,46 @@ export class ReprojectionGpuRenderer {
         return this.runGpuOperation(() => this._disposeGeometry(key));
     }
 
+    _releaseGaussianRendererIfUnused() {
+        if (!this.gaussianRenderer || [...this.geometries.values()].some(
+            entry => entry.engine === "playcanvas"
+        )) {
+            return;
+        }
+        this.gaussianRenderer.destroy();
+        this.gaussianRenderer = null;
+        this.gaussianRendererPromise = null;
+    }
+
     _disposeGeometry(key) {
         if (key === undefined) {
             for (const [, entry] of this.geometries) {
-                this.scene.remove(entry.object);
-                disposeObject(entry.object);
+                if (entry.engine === "playcanvas") {
+                    this.gaussianRenderer.dispose(entry.adapterKey);
+                } else {
+                    this.scene.remove(entry.object);
+                    disposeObject(entry.object);
+                }
             }
             this.geometries.clear();
             this.object = null;
             this.kind = null;
             this.activeKey = null;
+            this._releaseGaussianRendererIfUnused();
             return;
         }
         const entry = this.geometries.get(key);
         if (!entry) {
             return;
         }
-        this.scene.remove(entry.object);
-        disposeObject(entry.object);
+        if (entry.engine === "playcanvas") {
+            this.gaussianRenderer.dispose(entry.adapterKey);
+        } else {
+            this.scene.remove(entry.object);
+            disposeObject(entry.object);
+        }
         this.geometries.delete(key);
+        this._releaseGaussianRendererIfUnused();
         if (this.activeKey === key) {
             const remaining = [...this.geometries.keys()];
             if (remaining.length) {
@@ -944,6 +1223,7 @@ export class ReprojectionGpuRenderer {
 
 export {
     clippedDepthRange,
+    depthRangesForClipping,
     depthRangeForSphere,
     detectPlyKind,
     imageFrameScissor,

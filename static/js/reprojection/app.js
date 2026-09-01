@@ -16,6 +16,9 @@ const reprojectionGpuFallback = document.getElementById(
     "reprojection-gpu-fallback"
 );
 const reprojectionGpuCanvas = document.getElementById("reprojection-gpu");
+const reprojectionGaussianCanvas = document.getElementById(
+    "reprojection-gaussian"
+);
 const reprojectionDivider = document.getElementById("reprojection-divider");
 const reprojectionLayout = document.getElementById("reprojection-layout");
 const reprojectionSplitAngle = document.getElementById("reprojection-split-angle");
@@ -38,6 +41,13 @@ const reprojectionMeshBrightness = document.getElementById(
 );
 const reprojectionMeshBrightnessValue = document.getElementById(
     "reprojection-mesh-brightness-value"
+);
+const reprojectionGsplatField = document.getElementById(
+    "reprojection-gsplat-field"
+);
+const reprojectionGsplatAa = document.getElementById("reprojection-gsplat-aa");
+const reprojectionGsplatKernel = document.getElementById(
+    "reprojection-gsplat-kernel"
 );
 const reprojectionBackgroundTop = document.getElementById(
     "reprojection-background-top"
@@ -180,7 +190,7 @@ function getReprojectionGpuRenderer() {
             throw new Error("The browser GPU renderer did not load");
         }
         reprojectionGpuRenderer = new ReprojectionGpu.ReprojectionGpuRenderer(
-            reprojectionGpuCanvas
+            reprojectionGpuCanvas, reprojectionGaussianCanvas
         );
         reprojectionGpuRenderer.setPointSize(reprojectionPointSize.value);
         reprojectionGpuRenderer.setClippingRange(
@@ -597,6 +607,11 @@ function applyGeometryStatus(geometry) {
     reprojectionMeshColor.disabled = !hasLoadedMesh;
     reprojectionMeshBrightness.disabled = meshControlsDisabled;
     reprojectionMeshBrightnessValue.disabled = meshControlsDisabled;
+    const hasLoadedGaussian = geometry.kind === "gaussian splats"
+        || reprojectionState.loadedGeometries.some(
+            loaded => loaded.kind === "gaussian splats"
+        );
+    reprojectionGsplatField.hidden = !hasLoadedGaussian;
     syncReprojectionBackgroundControls(geometry.kind, Boolean(geometry.gpu));
 }
 
@@ -764,6 +779,9 @@ function attachReprojectionGpuCanvas() {
         if (reprojectionGpuCanvas.parentElement !== pane) {
             pane.insertBefore(reprojectionGpuCanvas, reprojectionCloudSide);
         }
+        if (reprojectionGaussianCanvas.parentElement !== pane) {
+            pane.insertBefore(reprojectionGaussianCanvas, reprojectionCloudSide);
+        }
     } else {
         reprojectionGpuFallback.style.left = "";
         reprojectionGpuFallback.style.top = "";
@@ -775,19 +793,32 @@ function attachReprojectionGpuCanvas() {
         if (reprojectionGpuCanvas.parentElement !== reprojectionSplit) {
             reprojectionSplit.insertBefore(reprojectionGpuCanvas, reprojectionCloud);
         }
+        if (reprojectionGaussianCanvas.parentElement !== reprojectionSplit) {
+            reprojectionSplit.insertBefore(
+                reprojectionGaussianCanvas, reprojectionCloud
+            );
+        }
     }
     reprojectionGpuFallback.classList.toggle(
         "active", reprojectionState.gpuFallbackReady
     );
-    reprojectionGpuCanvas.classList.add("active");
+    const engine = reprojectionGpuRenderer?.getGeometryEngine(
+        reprojectionState.leftSource
+    );
+    const gaussianActive = engine === "playcanvas";
+    reprojectionGpuCanvas.classList.toggle("active", !gaussianActive);
+    reprojectionGaussianCanvas.classList.toggle("active", gaussianActive);
     if (reprojectionLayout.value === "side") {
         // The detailed canvas remains the centered flex item. Overlay the
         // snapshot on its exact untransformed box without adding a second
         // flex item that would shrink or displace it.
-        reprojectionGpuFallback.style.left = `${reprojectionGpuCanvas.offsetLeft}px`;
-        reprojectionGpuFallback.style.top = `${reprojectionGpuCanvas.offsetTop}px`;
-        reprojectionGpuFallback.style.width = `${reprojectionGpuCanvas.clientWidth}px`;
-        reprojectionGpuFallback.style.height = `${reprojectionGpuCanvas.clientHeight}px`;
+        const detailedCanvas = ReprojectionGpuCanvas.canvasForEngine(
+            reprojectionGpuCanvas, reprojectionGaussianCanvas, engine
+        );
+        reprojectionGpuFallback.style.left = `${detailedCanvas.offsetLeft}px`;
+        reprojectionGpuFallback.style.top = `${detailedCanvas.offsetTop}px`;
+        reprojectionGpuFallback.style.width = `${detailedCanvas.clientWidth}px`;
+        reprojectionGpuFallback.style.height = `${detailedCanvas.clientHeight}px`;
     }
     reprojectionCloud.style.visibility = "hidden";
     reprojectionCloudSide.style.visibility = "hidden";
@@ -799,6 +830,8 @@ function disableReprojectionGpuCanvas() {
     reprojectionGpuFallback.style.transform = "";
     reprojectionGpuCanvas.classList.remove("active");
     reprojectionGpuCanvas.style.transform = "";
+    reprojectionGaussianCanvas.classList.remove("active");
+    reprojectionGaussianCanvas.style.transform = "";
 }
 
 function applyReprojectionViewTransform() {
@@ -903,9 +936,15 @@ function applyInteractiveReprojectionViewTransform() {
 
 function captureReprojectionGpuFallback() {
     const context = reprojectionGpuFallback.getContext("2d", {alpha: true});
-    reprojectionGpuFallback.width = reprojectionGpuCanvas.width;
-    reprojectionGpuFallback.height = reprojectionGpuCanvas.height;
-    context.drawImage(reprojectionGpuCanvas, 0, 0);
+    const engine = reprojectionGpuRenderer?.getGeometryEngine(
+        reprojectionState.leftSource
+    );
+    const source = ReprojectionGpuCanvas.canvasForEngine(
+        reprojectionGpuCanvas, reprojectionGaussianCanvas, engine
+    );
+    reprojectionGpuFallback.width = source.width;
+    reprojectionGpuFallback.height = source.height;
+    context.drawImage(source, 0, 0);
     reprojectionState.gpuFallbackReady = true;
 }
 
@@ -940,7 +979,12 @@ function applyReprojectionGpuViewTransform() {
     );
     reprojectionGpuCanvas.style.transform = `matrix(${transform.scale}, 0, 0, `
         + `${transform.scale}, ${transform.translateX}, ${transform.translateY})`;
+    reprojectionGaussianCanvas.style.transform =
+        reprojectionGpuCanvas.style.transform;
     applyGeometryFrameClip(reprojectionGpuCanvas, reprojectionState.gpuRenderedView);
+    applyGeometryFrameClip(
+        reprojectionGaussianCanvas, reprojectionState.gpuRenderedView
+    );
 }
 
 function reprojectionDisplaySize(image) {
@@ -1437,7 +1481,8 @@ function configuredBrowserGeometryLoader(configuredGeometry, image) {
             )
         )
         : (renderer, isCurrent) => renderer.loadUrl(
-            configuredGeometry.url, configuredGeometry.size, isCurrent
+            configuredGeometry.url, configuredGeometry.size, isCurrent,
+            configuredGeometry.name
         );
 }
 
@@ -1509,7 +1554,9 @@ async function installBrowserGeometry(
             return false;
         }
         const image = reprojectionState.images[reprojectionState.currentIndex];
-        if (image) {
+        if (ReprojectionGeometryPreparation.requiresGpuPreparation(
+            geometry, image
+        )) {
             setReprojectionStatus(`Preparing ${name} for display…`);
             const prepared = await renderer.prepareGeometry(
                 geometry.key,
@@ -1746,7 +1793,10 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         const useGpuComparison = includeRightPane
             && reprojectionLayout.value === "split"
             && rightIsGpu
-            && rightSource !== reprojectionState.leftSource;
+            && rightSource !== reprojectionState.leftSource
+            && renderer.supportsComparison(
+                reprojectionState.leftSource, rightSource
+            );
         if (useGpuComparison) {
             const split = ReprojectionSplitGeometry.geometry(
                 display.width,
@@ -1786,7 +1836,7 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         // Side-by-side layout still uses a full-resolution offscreen image
         // because its right pane is a separate DOM surface.
         if (includeRightPane && paneSources.isGpuGeometry(rightSource)
-                && reprojectionLayout.value === "side") {
+                && rightSource !== reprojectionState.leftSource) {
             const blob = await renderer.captureGeometry(
                 rightSource, image, renderSize.width, renderSize.height, region,
                 confineGeometryToImageFrame()
@@ -1805,6 +1855,11 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
                     && reprojectionState.renderMode === "gpu"
                     && reprojectionState.rightSource === rightSource
             );
+            if (reprojectionLayout.value === "split") {
+                reprojectionInputLayer.classList.remove(
+                    "same-geometry", "gpu-composited"
+                );
+            }
         }
         await renderer.renderGeometry(
             reprojectionState.leftSource,
@@ -2104,6 +2159,40 @@ reprojectionMeshColor.addEventListener("change", () => {
     if (reprojectionState.renderMode === "gpu") {
         renderReprojectionGpuFrame(reprojectionState.generation);
     }
+});
+// Mip-Splatting defaults to a 0.1 kernel; unchecked uses the original 3DGS
+// 0.3 dilation with no opacity compensation. The last Mip kernel is remembered
+// so toggling the mode restores it (while the disabled input shows the real
+// 0.3 value used by the original formula).
+const REPROJECTION_ORIGINAL_KERNEL = 0.3;
+let reprojectionMipKernel = 0.1;
+function commitReprojectionGsplatFilter(mipKernel) {
+    const mip = reprojectionGsplatAa.checked;
+    reprojectionGsplatKernel.disabled = !mip;
+    const kernelSize = mip ? mipKernel : REPROJECTION_ORIGINAL_KERNEL;
+    const applied = getReprojectionGpuRenderer().setGaussianSplatFilter({
+        antiAlias: mip,
+        kernelSize,
+    });
+    const effective = applied && Number.isFinite(applied.kernelSize)
+        ? applied.kernelSize
+        : kernelSize;
+    reprojectionGsplatKernel.value = effective;
+    if (mip) {
+        reprojectionMipKernel = effective;
+    }
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+    }
+}
+reprojectionGsplatAa.addEventListener("change", () => {
+    commitReprojectionGsplatFilter(reprojectionMipKernel);
+});
+reprojectionGsplatKernel.addEventListener("change", () => {
+    const value = Number(reprojectionGsplatKernel.value);
+    commitReprojectionGsplatFilter(
+        Number.isFinite(value) && value > 0 ? value : reprojectionMipKernel
+    );
 });
 function applyMeshBrightness(value = reprojectionMeshBrightnessValue.value) {
     const normalized = getReprojectionGpuRenderer().setMeshBrightness(

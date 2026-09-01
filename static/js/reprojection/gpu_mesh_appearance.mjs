@@ -27,7 +27,6 @@ export function meshMaterialDescription(shading, color, hasVertexColors) {
     const useVertexColors = colorMode === "vertex" && hasVertexColors;
     return {
         lit: shadingMode === "face",
-        flatShading: shadingMode === "face",
         vertexColors: useVertexColors,
         color: useVertexColors ? 0xffffff : 0xc0c0c0,
     };
