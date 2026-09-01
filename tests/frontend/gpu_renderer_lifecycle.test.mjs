@@ -130,4 +130,24 @@ function rendererHarness() {
     assert.equal(renders, 0);
 }
 
+{
+    const renderer = rendererHarness();
+    renderer.ready = Promise.resolve();
+    const loaded = {key: "adapter-key", count: 123};
+    let requestedUrl = null;
+    renderer.ensureGaussianRenderer = async () => ({
+        async loadUrl(url) {
+            requestedUrl = url;
+            return loaded;
+        },
+    });
+    renderer.installGaussian = result => ({installed: result});
+
+    const result = await renderer.loadUrl(
+        "/geometry", 999, () => true, "scene.ply", "gaussian splats"
+    );
+    assert.equal(requestedUrl, "/geometry");
+    assert.deepEqual(result, {installed: loaded});
+}
+
 console.log("GPU renderer lifecycle tests passed");

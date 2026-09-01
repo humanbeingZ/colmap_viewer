@@ -44,6 +44,9 @@ def configure_service(service: ColmapService) -> None:
     """Install the service instance used by the application routes."""
     global colmap_service
     colmap_service = service
+    # Geometry transport preparation is independent of COLMAP loading, so let
+    # it overlap server startup from the moment the CLI service is installed.
+    colmap_service.start_configured_mesh_warmup()
 
 
 @asynccontextmanager
@@ -78,6 +81,35 @@ def _is_loopback_request(request: Request) -> bool:
         return ipaddress.ip_address(request.client.host).is_loopback
     except ValueError:
         return False
+
+
+def _accepts_content_encoding(header: str, encoding: str) -> bool:
+    """Return whether an Accept-Encoding value permits an exact encoding."""
+    requested_quality = None
+    wildcard_quality = None
+    for item in header.split(","):
+        fields = [field.strip() for field in item.split(";")]
+        coding = fields[0].lower()
+        quality = 1.0
+        for parameter in fields[1:]:
+            name, separator, value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+                if not 0.0 <= quality <= 1.0:
+                    quality = 0.0
+        if coding == encoding.lower():
+            requested_quality = quality
+        elif coding == "*":
+            wildcard_quality = quality
+    quality = (
+        requested_quality
+        if requested_quality is not None
+        else wildcard_quality
+    )
+    return quality is not None and quality > 0.0
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -129,8 +161,10 @@ def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
     if not configured_geometry:
         return None
     token = configured_geometry.pop("token")
+    revision = configured_geometry["revision"]
     configured_geometry["url"] = (
-        f"/api/reprojection/configured-geometry?token={token}"
+        "/api/reprojection/configured-geometry"
+        f"?token={token}&version={revision}"
     )
     configured_geometry["activate_url"] = (
         f"/api/reprojection/configured-geometry/activate?token={token}"
@@ -139,8 +173,9 @@ def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
     if mesh_stream:
         mesh_stream["chunk_url"] = (
             "/api/reprojection/configured-mesh-chunks/"
-            f"{{chunk_index}}?token={token}"
+            f"{{chunk_index}}?token={token}&version={revision}"
         )
+    colmap_service.start_configured_mesh_warmup()
     return configured_geometry
 
 
@@ -209,33 +244,62 @@ async def get_reprojection_images():
 
 
 @app.get("/api/reprojection/configured-geometry")
-async def get_configured_reprojection_geometry(request: Request, token: str):
+async def get_configured_reprojection_geometry(
+    request: Request, token: str, version: str
+):
     if not _is_loopback_request(request):
         raise HTTPException(status_code=403, detail="Local access only")
-    geometry_path = colmap_service.resolve_configured_geometry_file(token)
+    geometry_path = colmap_service.resolve_configured_geometry_file(
+        token, version
+    )
     if geometry_path is None:
         raise HTTPException(status_code=404, detail="Configured geometry not found")
     return FileResponse(
         geometry_path,
         media_type="application/octet-stream",
         filename=os.path.basename(geometry_path),
+        headers={"Cache-Control": "private, max-age=3600, immutable"},
     )
 
 
 @app.get("/api/reprojection/configured-mesh-chunks/{chunk_index}")
-def get_configured_mesh_chunk(request: Request, chunk_index: int, token: str):
+def get_configured_mesh_chunk(
+    request: Request, chunk_index: int, token: str, version: str
+):
     if not _is_loopback_request(request):
         raise HTTPException(status_code=403, detail="Local access only")
-    mesh_stream = colmap_service.get_configured_mesh_stream(token)
+    mesh_stream = colmap_service.get_configured_mesh_stream(token, version)
     if mesh_stream is None:
         raise HTTPException(status_code=404, detail="Streamable mesh not found")
+    accepts_gzip = _accepts_content_encoding(
+        request.headers.get("accept-encoding", ""), "gzip"
+    )
     try:
-        payload = mesh_stream.encode_chunk(chunk_index)
+        result = (
+            mesh_stream.prepare_gzip_chunk(chunk_index)
+            if accepts_gzip
+            else mesh_stream.encode_chunk(chunk_index)
+        )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return Response(content=payload, media_type="application/octet-stream")
+    headers = {
+        "Cache-Control": "private, max-age=3600, immutable",
+        "Vary": "Accept-Encoding",
+    }
+    if accepts_gzip:
+        headers["Content-Encoding"] = "gzip"
+        return FileResponse(
+            result,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+    return Response(
+        content=result,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 
 @app.post("/api/reprojection/geometry")

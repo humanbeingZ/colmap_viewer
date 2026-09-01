@@ -4,6 +4,7 @@ import {
     PlayCanvasGaussianRenderer,
     playCanvasCameraWorldData,
     playCanvasProjectionData,
+    shouldReorderGaussianData,
 } from "../../static/js/reprojection/playcanvas_gaussian_renderer.mjs";
 
 const projection = playCanvasProjectionData({
@@ -32,6 +33,8 @@ assert.deepEqual(cameraWorld.map(value => Object.is(value, -0) ? 0 : value), [
     0, 0, -1, 0,
     -1, -2, -3, 1,
 ]);
+assert.equal(shouldReorderGaussianData({isWebGPU: true}), false);
+assert.equal(shouldReorderGaussianData({isWebGPU: false}), true);
 
 const uninitialized = Object.create(PlayCanvasGaussianRenderer.prototype);
 uninitialized.app = null;

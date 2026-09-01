@@ -120,6 +120,7 @@ if (!Number.isSafeInteger(reprojectionUploadGeneration)
 }
 let reprojectionUploadController = null;
 let activeGeometryLoadOperation = null;
+let reprojectionImagesLoadPromise = null;
 
 const reprojectionState = {
     images: [],
@@ -682,11 +683,7 @@ async function setViewerMode(mode) {
     }
 }
 
-async function ensureReprojectionImages() {
-    if (reprojectionState.loaded) {
-        return;
-    }
-    const configuredGeometry = reprojectionState.configuredGeometry;
+async function loadReprojectionImages() {
     setReprojectionStatus("Loading registered images…");
     try {
         reprojectionState.images = await reprojectionApi.images();
@@ -709,19 +706,58 @@ async function ensureReprojectionImages() {
         );
         reprojectionState.currentIndex = matchingIndex >= 0 ? matchingIndex : 0;
         reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
-        loadReprojectionFrame(reprojectionState.currentIndex);
-        if (configuredGeometry) {
-            const result = await loadConfiguredReprojectionGeometry(
-                configuredGeometry
-            );
-            if (result !== configuredGeometryLoadResult.loaded
-                    && reprojectionState.renderMode === "server") {
-                requestReprojectionPointLayer(reprojectionState.generation);
-            }
-            return;
+        loadInitialReprojectionFrameIfVisible();
+    } catch (error) {
+        setReprojectionStatus(error.message, true);
+    }
+}
+
+async function loadConfiguredGeometryForReprojection() {
+    const configuredGeometry = reprojectionState.configuredGeometry;
+    if (!configuredGeometry) {
+        return;
+    }
+    try {
+        const result = await loadConfiguredReprojectionGeometry(
+            configuredGeometry
+        );
+        if (result !== configuredGeometryLoadResult.loaded
+                && reprojectionState.renderMode === "server") {
+            requestReprojectionPointLayer(reprojectionState.generation);
         }
     } catch (error) {
         setReprojectionStatus(error.message, true);
+    }
+}
+
+function loadInitialReprojectionFrameIfVisible() {
+    if (document.body.dataset.viewerMode === "reprojection"
+            && reprojectionState.loaded
+            && !reprojectionState.currentInputUrl) {
+        loadReprojectionFrame(reprojectionState.currentIndex);
+    }
+}
+
+async function ensureReprojectionImages(loadFrame = true) {
+    if (!reprojectionState.loaded && !reprojectionImagesLoadPromise) {
+        reprojectionImagesLoadPromise = loadReprojectionImages()
+            .finally(() => {
+                reprojectionImagesLoadPromise = null;
+            });
+    }
+    if (loadFrame) {
+        // Geometry preloading may still own the shared promise. Do not make
+        // the visible camera image wait for that longer operation.
+        loadInitialReprojectionFrameIfVisible();
+    }
+    if (reprojectionImagesLoadPromise) {
+        await reprojectionImagesLoadPromise;
+    }
+    if (loadFrame) {
+        loadInitialReprojectionFrameIfVisible();
+        // Parsing and GPU upload are exact but resource-intensive. Run them
+        // only for the visible reprojection viewer so matching stays smooth.
+        await loadConfiguredGeometryForReprojection();
     }
 }
 
@@ -1311,7 +1347,8 @@ async function uploadServerGeometry(file) {
         reprojectionState.renderMode = "server";
         disableReprojectionGpuCanvas();
         applyGeometryStatus(geometry);
-        if (reprojectionState.loaded) {
+        if (reprojectionState.loaded
+                && document.body.dataset.viewerMode === "reprojection") {
             loadReprojectionFrame(reprojectionState.currentIndex);
         }
     } catch (error) {
@@ -1482,7 +1519,7 @@ function configuredBrowserGeometryLoader(configuredGeometry, image) {
         )
         : (renderer, isCurrent) => renderer.loadUrl(
             configuredGeometry.url, configuredGeometry.size, isCurrent,
-            configuredGeometry.name
+            configuredGeometry.name, configuredGeometry.kind
         );
 }
 
@@ -1596,7 +1633,8 @@ async function installBrowserGeometry(
             gpu: true,
         });
         attachReprojectionGpuCanvas();
-        if (reprojectionState.loaded) {
+        if (reprojectionState.loaded
+                && document.body.dataset.viewerMode === "reprojection") {
             loadReprojectionFrame(reprojectionState.currentIndex);
         }
         return true;
@@ -2396,3 +2434,13 @@ setInterval(heartbeatReprojectionStream, 30_000);
 heartbeatReprojectionStream();
 
 const reprojectionCapabilityReady = initializeReprojectionCapability();
+reprojectionCapabilityReady.then(async () => {
+    if (reprojectionState.configuredGeometry) {
+        // Preserve startup responsiveness for the default matching viewer.
+        // Server-side mesh preparation is already running independently.
+        await globalThis.matchingInitialViewReady?.catch(() => {});
+        // Warm only lightweight registered-image metadata in the browser.
+        // Exact geometry parsing and GPU upload begin when reprojection opens.
+        ensureReprojectionImages(false);
+    }
+});

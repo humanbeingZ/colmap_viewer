@@ -1,16 +1,53 @@
 import asyncio
+import gzip
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from starlette.requests import Request
 
 from viewer.app import (
+    _accepts_content_encoding,
+    _configured_geometry_descriptor,
+    get_configured_mesh_chunk,
     _is_loopback_request,
     _static_asset_version,
     set_local_reprojection_geometry,
 )
+
+
+class _FakeMeshStream:
+    def __init__(self, cache_path):
+        self.cache_path = cache_path
+
+    def prepare_gzip_chunk(self, chunk_index):
+        return self.cache_path
+
+
+class _FakeGeometryService:
+    def __init__(self, cache_path):
+        self.cache_path = cache_path
+
+    def get_configured_mesh_stream(self, token, version):
+        return _FakeMeshStream(self.cache_path) if token == "valid" else None
+
+
+class _FakeDescriptorService:
+    def __init__(self):
+        self.warmed = False
+
+    def get_configured_geometry_file(self):
+        return {
+            "name": "mesh.ply",
+            "token": "secret",
+            "revision": "abc123",
+            "mesh_stream": {"chunk_count": 2},
+        }
+
+    def start_configured_mesh_warmup(self):
+        self.warmed = True
 
 
 class MainImportTest(unittest.TestCase):
@@ -68,6 +105,55 @@ class MainImportTest(unittest.TestCase):
             asyncio.run(set_local_reprojection_geometry(request))
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "Invalid JSON body")
+
+    def test_mesh_chunks_use_negotiated_fast_gzip(self):
+        request = Request({
+            "type": "http",
+            "headers": [(b"accept-encoding", b"gzip, deflate")],
+            "client": ("127.0.0.1", 1234),
+        })
+        with tempfile.NamedTemporaryFile(suffix=".cvm.gz") as cached:
+            cached.write(gzip.compress(b"mesh payload\x03", compresslevel=1))
+            cached.flush()
+            with patch(
+                "viewer.app.colmap_service",
+                _FakeGeometryService(cached.name),
+                create=True,
+            ):
+                response = get_configured_mesh_chunk(
+                    request, 3, "valid", "revision"
+                )
+
+            self.assertEqual(response.headers["content-encoding"], "gzip")
+            self.assertIn("max-age", response.headers["cache-control"])
+            self.assertEqual(
+                gzip.decompress(Path(response.path).read_bytes()),
+                b"mesh payload\x03",
+            )
+
+    def test_content_encoding_negotiation_honors_quality(self):
+        self.assertTrue(_accepts_content_encoding("br, gzip", "gzip"))
+        self.assertTrue(_accepts_content_encoding("*;q=0.5", "gzip"))
+        self.assertFalse(_accepts_content_encoding("gzip;q=0", "gzip"))
+        self.assertFalse(_accepts_content_encoding("gzip;q=2", "gzip"))
+        self.assertFalse(_accepts_content_encoding("x-gzip", "gzip"))
+
+    def test_geometry_urls_include_file_revision(self):
+        service = _FakeDescriptorService()
+        with patch("viewer.app.colmap_service", service, create=True):
+            descriptor = _configured_geometry_descriptor()
+
+        self.assertEqual(
+            descriptor["url"],
+            "/api/reprojection/configured-geometry"
+            "?token=secret&version=abc123",
+        )
+        self.assertEqual(
+            descriptor["mesh_stream"]["chunk_url"],
+            "/api/reprojection/configured-mesh-chunks/"
+            "{chunk_index}?token=secret&version=abc123",
+        )
+        self.assertTrue(service.warmed)
 
 
 if __name__ == "__main__":

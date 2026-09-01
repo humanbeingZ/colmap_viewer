@@ -1,10 +1,29 @@
 """Bounded PLY point-cloud and mesh loading for reprojection."""
 
+import hashlib
 import os
 from typing import Any, Dict
 
 import numpy as np
 from plyfile import PlyData
+
+
+def geometry_file_identity(path: str) -> tuple[int, int, int, int, int]:
+    """Return inexpensive stat fields that change when geometry is replaced."""
+    source = os.stat(path)
+    return (
+        source.st_dev,
+        source.st_ino,
+        source.st_size,
+        source.st_mtime_ns,
+        source.st_ctime_ns,
+    )
+
+
+def geometry_file_revision(path: str) -> str:
+    """Return a compact browser-cache revision for the current file identity."""
+    identity = ":".join(str(value) for value in geometry_file_identity(path))
+    return hashlib.sha256(identity.encode("ascii")).hexdigest()[:16]
 
 
 class PlyGeometryLoader:
@@ -91,6 +110,7 @@ class PlyGeometryLoader:
     @staticmethod
     def _ply_header_info(path: str) -> Dict[str, Any]:
         elements = {}
+        properties = set()
         current_element = None
         file_format = None
         face_index_name = None
@@ -116,14 +136,15 @@ class PlyGeometryLoader:
                     elif fields[0] == "element" and len(fields) == 3:
                         current_element = fields[1]
                         elements[current_element] = int(fields[2])
-                    elif (
-                        fields[0] == "property"
-                        and current_element == "face"
-                        and len(fields) >= 5
-                        and fields[1] == "list"
-                        and fields[-1] in {"vertex_indices", "vertex_index"}
-                    ):
-                        face_index_name = fields[-1]
+                    elif fields[0] == "property" and len(fields) >= 3:
+                        properties.add(fields[-1])
+                        if (
+                            current_element == "face"
+                            and len(fields) >= 5
+                            and fields[1] == "list"
+                            and fields[-1] in {"vertex_indices", "vertex_index"}
+                        ):
+                            face_index_name = fields[-1]
                     elif fields[0] == "end_header":
                         break
         except OSError as exc:
@@ -134,7 +155,25 @@ class PlyGeometryLoader:
             "format": file_format,
             "elements": elements,
             "face_index_name": face_index_name,
+            "properties": properties,
         }
+
+    @classmethod
+    def inspect_kind(cls, path: str) -> str:
+        """Classify a PLY from its bounded header without reading its payload."""
+        header = cls._ply_header_info(path)
+        gaussian_properties = {
+            "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3",
+            "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+        }
+        if gaussian_properties.issubset(header["properties"]):
+            return "gaussian splats"
+        return (
+            "triangle mesh"
+            if header["elements"].get("face", 0) > 0
+            else "point cloud"
+        )
 
     @classmethod
     def validate_header(cls, path: str) -> None:

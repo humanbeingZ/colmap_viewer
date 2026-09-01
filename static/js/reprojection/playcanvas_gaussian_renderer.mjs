@@ -74,12 +74,21 @@ export function playCanvasCameraWorldData(camFromWorld) {
     return Array.from(view.invert().data);
 }
 
+export function shouldReorderGaussianData(device) {
+    return !device.isWebGPU;
+}
+
 function loadAsset(app, url, filename) {
     return new Promise((resolve, reject) => {
+        // The WebGPU raster renderer depth-sorts every complete splat set on
+        // the GPU, so PlayCanvas's additional load-time Morton permutation
+        // does not affect draw order. Avoid that expensive main-thread pass.
+        // Keep it for WebGL2, whose CPU-sort path can benefit from the locality.
+        const reorder = shouldReorderGaussianData(app.graphicsDevice);
         const asset = new Asset(filename, "gsplat", {
             url,
             filename,
-        });
+        }, {reorder});
         asset.once("load", () => resolve(asset));
         asset.once("error", error => {
             app.assets.remove(asset);

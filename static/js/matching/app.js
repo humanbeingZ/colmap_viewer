@@ -187,7 +187,7 @@ const epipolarTool = new EpipolarTool({
 // --- Initialization ---
 
 // Initial setup on page load
-init();
+globalThis.matchingInitialViewReady = init();
 
 async function init() {
     await initializeSources();
@@ -233,6 +233,16 @@ async function fetchImages() {
     try {
         allImages = await matchingApi.images();
         populateImageSelects();
+        if (!image1Select.value && allImages.length) {
+            image1Select.value = String(allImages[0].id);
+            await drawImageAndFeatures(
+                currentImage1, image1Canvas, ctx1,
+                image1Select.value, true
+            );
+            // Populate candidate choices after the visible startup image wins
+            // network and decode priority. No second image is selected yet.
+            updateImage2List();
+        }
     } catch (error) {
         console.error("Error fetching images:", error);
     }
@@ -353,8 +363,14 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
 
     return new Promise((resolve) => {
         imageElement.onload = () => {
+            imageElement.onerror = null;
             resetCanvasState(canvas, imageElement, state);
             redrawCanvas(canvas, ctx, canvasKey);
+            resolve();
+        };
+        imageElement.onerror = () => {
+            imageElement.onload = null;
+            console.error(`Error loading image ${imageData.name}`);
             resolve();
         };
         imageElement.src = `/serve_image/${imageData.name}`;

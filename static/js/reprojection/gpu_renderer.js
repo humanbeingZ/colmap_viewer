@@ -329,12 +329,19 @@ export class ReprojectionGpuRenderer {
     }
 
     async loadUrl(
-        url, fileSize, isCurrent = () => true, filename = "geometry.ply"
+        url, fileSize, isCurrent = () => true, filename = "geometry.ply",
+        expectedKind = null
     ) {
         await this.ready;
+        if (expectedKind === "gaussian splats") {
+            const renderer = await this.ensureGaussianRenderer();
+            const loaded = await renderer.loadUrl(
+                url, filename, isCurrent
+            );
+            return loaded && this.installGaussian(loaded);
+        }
         const response = await fetch(url, {
-            cache: "no-store",
-            headers: {Range: "bytes=0-1048575"},
+            headers: expectedKind ? {} : {Range: "bytes=0-1048575"},
         });
         if (!response.ok) {
             throw new Error(`Unable to read configured geometry: HTTP ${response.status}`);
@@ -350,7 +357,8 @@ export class ReprojectionGpuRenderer {
         const header = new TextDecoder().decode(
             inspectionBytes.slice(0, 1024 * 1024)
         );
-        const kind = ReprojectionGpuRenderer.inspectHeader(header);
+        const kind = expectedKind
+            || ReprojectionGpuRenderer.inspectHeader(header);
         if (kind === "gaussian splats") {
             const renderer = await this.ensureGaussianRenderer();
             const loaded = await renderer.loadUrl(
@@ -360,7 +368,7 @@ export class ReprojectionGpuRenderer {
         }
         let bytes = inspectionBytes;
         if (response.status === 206) {
-            const fullResponse = await fetch(url, {cache: "no-store"});
+            const fullResponse = await fetch(url);
             if (!fullResponse.ok) {
                 throw new Error(
                     `Unable to read configured geometry: HTTP ${fullResponse.status}`
@@ -412,7 +420,6 @@ export class ReprojectionGpuRenderer {
                 }
                 const url = manifest.chunk_url.replace("{chunk_index}", chunkIndex);
                 const response = await fetch(url, {
-                    cache: "no-store",
                     signal: controller.signal,
                 });
                 if (!response.ok) {

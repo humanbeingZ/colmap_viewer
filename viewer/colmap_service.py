@@ -3,6 +3,7 @@ import os
 import io
 import hashlib
 import hmac
+import logging
 import secrets
 import threading
 from typing import List, Dict, Any, Optional
@@ -12,7 +13,11 @@ import numpy as np
 from PIL import Image
 from .geometry.epipolar import PoseNeighborIndex, fundamental_matrix
 from .geometry.mesh_stream import StreamablePlyMesh
-from .geometry.ply import PlyGeometryLoader
+from .geometry.ply import (
+    PlyGeometryLoader,
+    geometry_file_identity,
+    geometry_file_revision,
+)
 from .reprojection.core import (
     BoundedLRUCache,
     GeometryData,
@@ -21,6 +26,9 @@ from .reprojection.core import (
     ViewerGeometryStore,
 )
 from .reprojection.renderer import ReprojectionRenderer
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataSource(Enum):
@@ -66,8 +74,10 @@ class ColmapService:
         self.geometry_path = geometry_path
         self._geometry_file_token = secrets.token_urlsafe(32)
         self._configured_geometry_server_loaded = False
+        self._configured_geometry_identity = None
         self._configured_mesh_stream: Optional[StreamablePlyMesh] = None
         self._configured_mesh_stream_inspected = False
+        self._configured_mesh_warmup_key: Optional[str] = None
         self._configured_geometry_lock = threading.RLock()
         namespace_source = "\0".join(
             os.path.abspath(path) if path else ""
@@ -110,18 +120,40 @@ class ColmapService:
             png_cache=self._png_cache,
         )
 
+    def _refresh_configured_geometry_locked(self, path: str) -> None:
+        identity = geometry_file_identity(path)
+        if identity == self._configured_geometry_identity:
+            return
+        if self._configured_geometry_identity is not None:
+            # Bind every browser-visible URL to one concrete file identity.
+            self._geometry_file_token = secrets.token_urlsafe(32)
+        self._configured_geometry_identity = identity
+        self._configured_geometry_server_loaded = False
+        self._configured_mesh_stream = None
+        self._configured_mesh_stream_inspected = False
+        self._configured_mesh_warmup_key = None
+
     def get_configured_geometry_file(self) -> Optional[Dict[str, Any]]:
         """Describe the selected server-local geometry without exposing its path."""
         with self._configured_geometry_lock:
             path = self.geometry_path
             if not path or not os.path.isfile(path):
                 return None
+            self._refresh_configured_geometry_locked(path)
             if not self._configured_mesh_stream_inspected:
                 self._configured_mesh_stream = StreamablePlyMesh.inspect(path)
                 self._configured_mesh_stream_inspected = True
+            try:
+                kind = self._ply_loader.inspect_kind(path)
+            except ValueError:
+                # The client can still inspect the fetched header and report a
+                # useful load error if the file changed after selection.
+                kind = None
             descriptor = {
                 "name": os.path.basename(path),
                 "size": os.path.getsize(path),
+                "kind": kind,
+                "revision": geometry_file_revision(path),
                 "token": self._geometry_file_token,
                 "server_loaded": self._configured_geometry_server_loaded,
             }
@@ -137,9 +169,41 @@ class ColmapService:
             self.geometry_path = resolved
             self._geometry_file_token = secrets.token_urlsafe(32)
             self._configured_geometry_server_loaded = False
+            self._configured_geometry_identity = None
             self._configured_mesh_stream = None
             self._configured_mesh_stream_inspected = False
-            return self.get_configured_geometry_file()
+            descriptor = self.get_configured_geometry_file()
+        self.start_configured_mesh_warmup()
+        return descriptor
+
+    def start_configured_mesh_warmup(self) -> None:
+        """Prebuild exact compressed chunks while the user opens the viewer."""
+        mesh_stream = self.get_configured_mesh_stream()
+        if (
+            mesh_stream is None
+            or mesh_stream.face_count <= mesh_stream.chunk_face_count
+        ):
+            return
+        cache_key = mesh_stream.cache_key
+        with self._configured_geometry_lock:
+            if self._configured_mesh_warmup_key == cache_key:
+                return
+            self._configured_mesh_warmup_key = cache_key
+
+        def warm() -> None:
+            try:
+                mesh_stream.warm_gzip_cache()
+            except (OSError, ValueError) as error:
+                with self._configured_geometry_lock:
+                    if self._configured_mesh_warmup_key == cache_key:
+                        self._configured_mesh_warmup_key = None
+                logger.warning("Unable to warm mesh chunk cache: %s", error)
+
+        threading.Thread(
+            target=warm,
+            name="mesh-chunk-warmup",
+            daemon=True,
+        ).start()
 
     def activate_configured_geometry(
         self, token: str, request_stream: str = "default"
@@ -161,25 +225,37 @@ class ColmapService:
                 self._configured_geometry_server_loaded = True
         return status
 
-    def resolve_configured_geometry_file(self, token: str) -> Optional[str]:
+    def resolve_configured_geometry_file(
+        self, token: str, revision: Optional[str] = None
+    ) -> Optional[str]:
         """Resolve selected geometry for its unguessable capability token."""
         with self._configured_geometry_lock:
-            if not self.geometry_path or not hmac.compare_digest(
-                token, self._geometry_file_token
-            ):
+            if not self.geometry_path or not os.path.isfile(self.geometry_path):
                 return None
-            if not os.path.isfile(self.geometry_path):
+            self._refresh_configured_geometry_locked(self.geometry_path)
+            if not hmac.compare_digest(token, self._geometry_file_token):
+                return None
+            if (
+                revision is not None
+                and not hmac.compare_digest(
+                    revision, geometry_file_revision(self.geometry_path)
+                )
+            ):
                 return None
             return self.geometry_path
 
     def get_configured_mesh_stream(
-        self, token: Optional[str] = None
+        self, token: Optional[str] = None, revision: Optional[str] = None
     ) -> Optional[StreamablePlyMesh]:
-        if token is not None and self.resolve_configured_geometry_file(token) is None:
+        if (
+            token is not None
+            and self.resolve_configured_geometry_file(token, revision) is None
+        ):
             return None
         if not self.geometry_path or not os.path.isfile(self.geometry_path):
             return None
         with self._configured_geometry_lock:
+            self._refresh_configured_geometry_locked(self.geometry_path)
             if not self._configured_mesh_stream_inspected:
                 self._configured_mesh_stream = StreamablePlyMesh.inspect(
                     self.geometry_path

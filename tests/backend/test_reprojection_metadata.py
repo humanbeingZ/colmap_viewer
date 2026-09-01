@@ -10,6 +10,21 @@ from viewer.colmap_service import ColmapService
 MINIMAL_ASCII_PLY = (
     b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"
 )
+GAUSSIAN_ASCII_PLY = (
+    b"ply\nformat ascii 1.0\nelement vertex 0\n"
+    + b"".join(
+        f"property float {name}\n".encode("ascii")
+        for name in (
+            "x", "y", "z", "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3",
+            "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+        )
+    )
+    + b"end_header\n"
+)
+CHANGED_ASCII_PLY = (
+    b"ply\nformat ascii 1.0\ncomment replaced\nelement vertex 0\nend_header\n"
+)
 
 
 class FakePose:
@@ -70,12 +85,74 @@ class ReprojectionMetadataTest(unittest.TestCase):
 
             self.assertEqual(descriptor["name"], os.path.basename(geometry_file.name))
             self.assertEqual(descriptor["size"], len(MINIMAL_ASCII_PLY))
+            self.assertEqual(descriptor["kind"], "point cloud")
+            self.assertRegex(descriptor["revision"], r"^[0-9a-f]{16}$")
             self.assertNotIn(geometry_file.name, descriptor.values())
             self.assertEqual(
                 service.resolve_configured_geometry_file(descriptor["token"]),
                 geometry_file.name,
             )
             self.assertIsNone(service.resolve_configured_geometry_file("wrong"))
+
+    def test_overwritten_geometry_rotates_identity_and_drops_cached_metadata(self):
+        with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:
+            geometry_file.write(MINIMAL_ASCII_PLY)
+            geometry_file.flush()
+            service = ColmapService("", geometry_path=geometry_file.name)
+            with patch(
+                "viewer.colmap_service.StreamablePlyMesh.inspect",
+                return_value=None,
+            ) as inspect_mesh:
+                first = service.get_configured_geometry_file()
+
+                geometry_file.seek(0)
+                geometry_file.truncate()
+                geometry_file.write(CHANGED_ASCII_PLY)
+                geometry_file.flush()
+                second = service.get_configured_geometry_file()
+
+            self.assertNotEqual(second["revision"], first["revision"])
+            self.assertNotEqual(second["token"], first["token"])
+            self.assertEqual(inspect_mesh.call_count, 2)
+            self.assertIsNone(
+                service.resolve_configured_geometry_file(first["token"])
+            )
+            self.assertIsNone(
+                service.resolve_configured_geometry_file(
+                    second["token"], first["revision"]
+                )
+            )
+            self.assertEqual(
+                service.resolve_configured_geometry_file(
+                    second["token"], second["revision"]
+                ),
+                geometry_file.name,
+            )
+
+    def test_kind_detection_failure_does_not_break_geometry_descriptor(self):
+        with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:
+            geometry_file.write(MINIMAL_ASCII_PLY)
+            geometry_file.flush()
+            service = ColmapService("", geometry_path=geometry_file.name)
+            service.get_configured_geometry_file()
+
+            geometry_file.seek(0)
+            geometry_file.truncate()
+            geometry_file.write(b"not a ply")
+            geometry_file.flush()
+
+            descriptor = service.get_configured_geometry_file()
+            self.assertIsNone(descriptor["kind"])
+
+    def test_configured_geometry_identifies_gaussians_from_the_header(self):
+        with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:
+            geometry_file.write(GAUSSIAN_ASCII_PLY)
+            geometry_file.flush()
+            service = ColmapService("", geometry_path=geometry_file.name)
+
+            descriptor = service.get_configured_geometry_file()
+
+            self.assertEqual(descriptor["kind"], "gaussian splats")
 
     def test_server_local_geometry_replaces_path_and_rotates_token(self):
         with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:

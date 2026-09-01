@@ -1,10 +1,14 @@
+import gzip
+import os
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from plyfile import PlyData, PlyElement
 
+from viewer.geometry import mesh_stream
 from viewer.geometry.mesh_stream import StreamablePlyMesh
 
 
@@ -74,6 +78,43 @@ class MeshStreamTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".ply") as source:
             self.write_mesh(source.name, [[0, 1, 2, 3]])
             self.assertIsNone(StreamablePlyMesh.inspect(source.name))
+
+    def test_compressed_chunks_are_prepared_once_in_a_persistent_cache(self):
+        with tempfile.TemporaryDirectory() as cache_root:
+            with tempfile.NamedTemporaryFile(suffix=".ply") as source:
+                self.write_mesh(source.name, [[0, 1, 2], [0, 2, 3]])
+                mesh = StreamablePlyMesh.inspect(
+                    source.name, chunk_face_count=1, draw_face_count=1
+                )
+                with patch.dict(
+                    os.environ, {"COLMAP_VIEWER_MESH_CACHE": cache_root}
+                ):
+                    first = mesh.prepare_gzip_chunk(0)
+                    first_mtime = os.stat(first).st_mtime_ns
+                    second = mesh.prepare_gzip_chunk(0)
+
+                self.assertEqual(first, second)
+                self.assertEqual(os.stat(second).st_mtime_ns, first_mtime)
+                self.assertEqual(mesh_stream._CACHE_LOCKS, {})
+                with open(second, "rb") as cached:
+                    self.assertEqual(
+                        gzip.decompress(cached.read()), mesh.encode_chunk(0)
+                    )
+
+    def test_default_cache_prunes_old_revisions(self):
+        with tempfile.TemporaryDirectory() as cache_root:
+            keys = [f"{index:024x}" for index in range(10)]
+            for index, key in enumerate(keys):
+                path = os.path.join(cache_root, key)
+                os.mkdir(path)
+                os.utime(path, ns=(index + 1, index + 1))
+            with patch.dict(os.environ):
+                os.environ.pop("COLMAP_VIEWER_MESH_CACHE", None)
+                mesh_stream._prune_default_cache(cache_root, keys[-1])
+
+            self.assertEqual(
+                sorted(os.listdir(cache_root)), sorted(keys[-8:])
+            )
 
 
 if __name__ == "__main__":
