@@ -43,6 +43,16 @@ let outlierMatchedIndices2 = new Set();
 let image1Colors = [];
 let matches_map_img2_to_img1 = new Map();
 let currentMatchSummary = null;
+let matchingPreviewGeneration = 0;
+let matchingPreviewActive = false;
+let matchingPreviewController = null;
+const imageLoadGenerations = {image1: 0, image2: 0};
+
+function matchingImageUrl(name, maxSize = null) {
+    const path = String(name).split("/").map(encodeURIComponent).join("/");
+    const preview = maxSize ? `?max_size=${maxSize}` : "";
+    return `/serve_image/${path}${preview}`;
+}
 
 function resetMatchState() {
     currentMatches = { inlier: [], outlier: [] };
@@ -326,20 +336,21 @@ async function updateImage2List() {
 
 // --- Canvas Drawing Functions ---
 
-function resetCanvasState(canvas, imageElement, state) {
+function resetCanvasState(canvas, imageElement, state, imageData = null) {
     MatchingCanvas.configure(
-        canvas, imageElement, state, window.devicePixelRatio || 1
+        canvas, imageElement, state, window.devicePixelRatio || 1, imageData
     );
 }
 
 async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPanel) {
     const canvasKey = isLeftPanel ? "image1" : "image2";
     const state = canvasStates[canvasKey];
+    const generation = ++imageLoadGenerations[canvasKey];
 
     if (!imageId) {
         MatchingCanvas.clear(canvas, ctx);
         if (isLeftPanel) { currentImage1Data = null; } else { currentImage2Data = null; }
-        return;
+        return true;
     }
 
     let imageData;
@@ -351,7 +362,12 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
     }
     if (!imageData) {
         MatchingCanvas.clear(canvas, ctx);
-        return;
+        return false;
+    }
+    const select = isLeftPanel ? image1Select : image2Select;
+    if (generation !== imageLoadGenerations[canvasKey]
+            || String(select.value) !== String(imageId)) {
+        return false;
     }
 
     if (isLeftPanel) {
@@ -363,18 +379,113 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
 
     return new Promise((resolve) => {
         imageElement.onload = () => {
+            if (generation !== imageLoadGenerations[canvasKey]
+                    || String(select.value) !== String(imageId)) {
+                resolve(false);
+                return;
+            }
             imageElement.onerror = null;
-            resetCanvasState(canvas, imageElement, state);
+            resetCanvasState(canvas, imageElement, state, imageData);
             redrawCanvas(canvas, ctx, canvasKey);
-            resolve();
+            resolve(true);
         };
         imageElement.onerror = () => {
             imageElement.onload = null;
             console.error(`Error loading image ${imageData.name}`);
-            resolve();
+            resolve(false);
         };
-        imageElement.src = `/serve_image/${imageData.name}`;
+        imageElement.src = matchingImageUrl(imageData.name);
     });
+}
+
+function clearMatchingPreviewOverlays() {
+    matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
+    epipolarTool.setSuspended(true);
+}
+
+async function loadMatchingNavigationPreview(target, generation, signal) {
+    const imageId = target.select.value;
+    const image = allImages.find(
+        candidate => String(candidate.id) === String(imageId)
+    );
+    if (!image) {
+        return false;
+    }
+    try {
+        const response = await fetch(matchingImageUrl(image.name, 768), {
+            signal,
+        });
+        if (!response.ok) {
+            return false;
+        }
+        const blob = await response.blob();
+        if (generation !== matchingPreviewGeneration
+                || String(target.select.value) !== String(imageId)) {
+            return false;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        const preview = new Image();
+        return await new Promise(resolve => {
+            preview.onload = () => {
+                URL.revokeObjectURL(objectUrl);
+                if (generation !== matchingPreviewGeneration
+                        || String(target.select.value) !== String(imageId)) {
+                    resolve(false);
+                    return;
+                }
+                const state = canvasStates[target.canvasKey];
+                resetCanvasState(target.canvas, preview, state, image);
+                MatchingCanvas.clear(target.canvas, target.context);
+                target.context.save();
+                MatchingCanvas.applyTransform(target.context, state);
+                target.context.imageSmoothingEnabled = true;
+                const previewSize = MatchingCanvas.imageSize(preview, image);
+                target.context.drawImage(
+                    preview, 0, 0, previewSize.width, previewSize.height
+                );
+                target.context.restore();
+                // Let the canvas reach the screen before another held-key
+                // repeat is allowed to replace it.
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => resolve(true));
+                });
+            };
+            preview.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                resolve(false);
+            };
+            preview.src = objectUrl;
+        });
+    } catch (error) {
+        if (error.name !== "AbortError") {
+            console.error(`Error loading preview for ${image.name}:`, error);
+        }
+        return false;
+    }
+}
+
+function showMatchingNavigationPreview(target) {
+    matchingPreviewActive = true;
+    imageLoadGenerations[target.canvasKey] += 1;
+    clearMatchingPreviewOverlays();
+    const generation = ++matchingPreviewGeneration;
+    const controller = new AbortController();
+    matchingPreviewController = controller;
+    return loadMatchingNavigationPreview(target, generation, controller.signal)
+        .finally(() => {
+            if (matchingPreviewController === controller) {
+                matchingPreviewController = null;
+            }
+        });
+}
+
+function commitMatchingNavigation(target) {
+    matchingPreviewController?.abort();
+    matchingPreviewController = null;
+    matchingPreviewGeneration += 1;
+    matchingPreviewActive = false;
+    epipolarTool.setSuspended(false);
+    target.select.dispatchEvent(new Event("change"));
 }
 
 function redrawCanvas(canvas, ctx, canvasKey) {
@@ -391,13 +502,8 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     ctx.save();
     MatchingCanvas.applyTransform(ctx, state);
     ctx.imageSmoothingEnabled = state.scale * state.pixelRatio < 1;
-    ctx.drawImage(
-        imageElement,
-        0,
-        0,
-        imageElement.naturalWidth || imageElement.width,
-        imageElement.naturalHeight || imageElement.height
-    );
+    const imageSize = MatchingCanvas.imageSize(imageElement, imageData);
+    ctx.drawImage(imageElement, 0, 0, imageSize.width, imageSize.height);
 
     if (showMarkersCheckbox.checked) {
         drawFeaturePoints(ctx, imageData.points2D, state.scale, canvasKey);
@@ -457,6 +563,9 @@ function drawMatches() {
     matchCanvas.height = matchCanvas.parentElement.clientHeight;
     matchCtx.clearRect(0, 0, matchCanvas.width, matchCanvas.height);
 
+    if (matchingPreviewActive) {
+        return;
+    }
     if (!linesVisible || !currentImage1Data || !currentImage2Data || (!currentMatches.inlier.length && !currentMatches.outlier.length)) {
         return;
     }
@@ -550,7 +659,12 @@ image1Select.addEventListener("change", async () => {
 
     resetMatchState();
 
-    await drawImageAndFeatures(currentImage1, image1Canvas, ctx1, imageId1, true);
+    const loaded = await drawImageAndFeatures(
+        currentImage1, image1Canvas, ctx1, imageId1, true
+    );
+    if (!loaded || image1Select.value !== imageId1) {
+        return;
+    }
     await updateImage2List();
 
     const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
@@ -581,7 +695,13 @@ image1Select.addEventListener("change", async () => {
 image2Select.addEventListener("change", async () => {
     resetMatchState();
 
-    await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, image2Select.value, false);
+    const imageId2 = image2Select.value;
+    const loaded = await drawImageAndFeatures(
+        currentImage2, image2Canvas, ctx2, imageId2, false
+    );
+    if (!loaded || image2Select.value !== imageId2) {
+        return;
+    }
 
     const hasPair = Boolean(image1Select.value && image2Select.value);
     const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
@@ -644,12 +764,16 @@ drawMatchesButton.addEventListener("click", async () => {
 resetViewButton.addEventListener("click", () => {
     if (currentImage1Data) {
         const state1 = canvasStates['image1'];
-        resetCanvasState(image1Canvas, currentImage1, state1);
+        resetCanvasState(
+            image1Canvas, currentImage1, state1, currentImage1Data
+        );
         redrawCanvas(image1Canvas, ctx1, "image1");
     }
     if (currentImage2Data) {
         const state2 = canvasStates['image2'];
-        resetCanvasState(image2Canvas, currentImage2, state2);
+        resetCanvasState(
+            image2Canvas, currentImage2, state2, currentImage2Data
+        );
         redrawCanvas(image2Canvas, ctx2, "image2");
     }
     drawMatches();
@@ -796,7 +920,8 @@ function handleMouseOut(e) {
 });
 
 window.addEventListener("resize", () => {
-    if (document.body.dataset.viewerMode === "reprojection") {
+    if (document.body.dataset.viewerMode === "reprojection"
+            || matchingPreviewActive) {
         return;
     }
     drawImageAndFeatures(currentImage1, image1Canvas, ctx1, image1Select.value, true);
@@ -804,65 +929,66 @@ window.addEventListener("resize", () => {
     drawMatches();
 });
 
+const matchingHoldNavigation = new MatchingNavigation.MatchingHoldNavigation({
+    targets: {
+        ArrowLeft: {
+            select: image1Select,
+            direction: "backward",
+            canvas: image1Canvas,
+            context: ctx1,
+            canvasKey: "image1",
+        },
+        ArrowRight: {
+            select: image1Select,
+            direction: "forward",
+            canvas: image1Canvas,
+            context: ctx1,
+            canvasKey: "image1",
+        },
+        ArrowUp: {
+            select: image2Select,
+            direction: "backward",
+            canvas: image2Canvas,
+            context: ctx2,
+            canvasKey: "image2",
+            enabled: () => Boolean(image1Select.value),
+        },
+        ArrowDown: {
+            select: image2Select,
+            direction: "forward",
+            canvas: image2Canvas,
+            context: ctx2,
+            canvasKey: "image2",
+            enabled: () => Boolean(image1Select.value),
+        },
+    },
+    onPreview: showMatchingNavigationPreview,
+    onCommit: commitMatchingNavigation,
+});
+
 window.addEventListener("keydown", (e) => {
     if (document.body.dataset.viewerMode === "reprojection") {
         return;
     }
-    // Check if a dropdown is focused
-    if (document.activeElement.tagName === "SELECT") {
+    // Preserve native arrow behavior for unrelated dropdowns. The two image
+    // dropdowns intentionally use live navigation even while focused.
+    if (document.activeElement.tagName === "SELECT"
+            && document.activeElement !== image1Select
+            && document.activeElement !== image2Select) {
         return;
     }
 
-    const cycleSelect = (selectElement, direction) => {
-        const currentIndex = selectElement.selectedIndex;
-        const numOptions = selectElement.options.length;
-
-        if (numOptions <= 1) {
-            return;
-        }
-
-        let nextIndex;
-        if (direction === "forward") {
-            nextIndex = currentIndex + 1;
-            if (nextIndex >= numOptions) {
-                nextIndex = 1; // Wrap around to the first image, skipping the placeholder
-            }
-        } else { // "backward"
-            nextIndex = currentIndex - 1;
-            if (nextIndex < 1) {
-                nextIndex = numOptions - 1; // Wrap around to the last image
-            }
-        }
-
-        if (nextIndex !== currentIndex) {
-            selectElement.selectedIndex = nextIndex;
-            selectElement.dispatchEvent(new Event("change"));
-        }
-    };
-
-    switch (e.key) {
-        case "ArrowLeft":
-            e.preventDefault();
-            cycleSelect(image1Select, "backward");
-            break;
-        case "ArrowRight":
-            e.preventDefault();
-            cycleSelect(image1Select, "forward");
-            break;
-        case "ArrowUp":
-            e.preventDefault();
-            if (image1Select.value) {
-                cycleSelect(image2Select, "backward");
-            }
-            break;
-        case "ArrowDown":
-            e.preventDefault();
-            if (image1Select.value) {
-                cycleSelect(image2Select, "forward");
-            }
-            break;
+    if (matchingHoldNavigation.keyDown(e.key)) {
+        e.preventDefault();
     }
 });
+
+window.addEventListener("keyup", (e) => {
+    if (matchingHoldNavigation.keyUp(e.key)) {
+        e.preventDefault();
+    }
+});
+window.addEventListener("blur", () => matchingHoldNavigation.commit());
 
 // --- Utility Functions ---
 

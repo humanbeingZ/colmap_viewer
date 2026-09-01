@@ -92,6 +92,7 @@
             this.getCanvasState = getCanvasState;
             this.imageToOverlay = imageToOverlay;
             this.enabled = false;
+            this.suspended = false;
             this.geometry = null;
             this.lines = null;
             this.pairKey = undefined;
@@ -132,7 +133,17 @@
             this.button.title = key
                 ? "Move over either image to inspect pose-derived epipolar lines"
                 : "Select two images first";
-            if (this.enabled && key) {
+            if (this.enabled && key && !this.suspended) {
+                this.loadGeometry();
+            }
+        }
+
+        setSuspended(suspended) {
+            const changed = this.suspended !== suspended;
+            this.suspended = suspended;
+            this.clear();
+            if (changed && !suspended && this.enabled
+                    && this.pairKey && !this.geometry) {
                 this.loadGeometry();
             }
         }
@@ -200,7 +211,8 @@
         }
 
         updateFromPointer() {
-            if (!this.enabled || !this.geometry || !this.pendingPointer) {
+            if (this.suspended || !this.enabled
+                    || !this.geometry || !this.pendingPointer) {
                 return;
             }
             const {canvas, event} = this.pendingPointer;
@@ -249,7 +261,7 @@
 
         draw() {
             this.clear();
-            if (!this.enabled || !this.lines
+            if (this.suspended || !this.enabled || !this.lines
                     || this.overlay.width === 0 || this.overlay.height === 0) {
                 return;
             }

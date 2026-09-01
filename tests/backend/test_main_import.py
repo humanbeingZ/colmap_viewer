@@ -1,11 +1,13 @@
 import asyncio
 import gzip
+import io
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from PIL import Image
 from starlette.requests import Request
 
 from viewer.app import (
@@ -13,6 +15,7 @@ from viewer.app import (
     _configured_geometry_descriptor,
     get_configured_mesh_chunk,
     _is_loopback_request,
+    _matching_image_preview,
     _static_asset_version,
     set_local_reprojection_geometry,
 )
@@ -154,6 +157,18 @@ class MainImportTest(unittest.TestCase):
             "{chunk_index}?token=secret&version=abc123",
         )
         self.assertTrue(service.warmed)
+
+    def test_matching_preview_is_bounded_jpeg(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            Image.new("RGB", (1600, 800), (20, 40, 60)).save(
+                source, format="PNG"
+            )
+            source.flush()
+            preview = _matching_image_preview(source.name, 320)
+
+        with Image.open(io.BytesIO(preview)) as image:
+            self.assertEqual(image.format, "JPEG")
+            self.assertEqual(image.size, (320, 160))
 
 
 if __name__ == "__main__":

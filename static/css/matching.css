@@ -171,6 +171,7 @@
 }
 
 .image-panel {
+    position: relative;
     border: 1px solid #ccc;
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
     background-color: #fff;
@@ -179,7 +180,15 @@
     align-items: center;
     overflow: hidden; /* Important for canvas scaling */
     flex: 1; /* Allow panels to grow and take available space equally */
+    min-width: 0; /* Keep canvas intrinsic size from changing flex allocation. */
+    min-height: 0;
     height: 100%;
+}
+
+.image-panel > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
 }
 
 canvas {
@@ -188,4 +197,3 @@ canvas {
     max-height: 100%;
     object-fit: contain;
 }
-

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COLMAP Viewer</title>
     <link rel="stylesheet" href="/static/css/base.css">
-    <link rel="stylesheet" href="/static/css/matching.css">
+    <link rel="stylesheet" href="/static/css/matching.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/reprojection.css?v={{ static_asset_version }}">
 </head>
 <body>
@@ -343,9 +343,10 @@
         </div>
     </div>
 
-    <script src="/static/js/matching/api.js"></script>
-    <script src="/static/js/matching/canvas.js"></script>
-    <script src="/static/js/matching/epipolar.js"></script>
+    <script src="/static/js/matching/api.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/canvas.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/epipolar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/navigation.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/shared/viewer_stream.js"></script>
     <script src="/static/js/reprojection/api.js"></script>

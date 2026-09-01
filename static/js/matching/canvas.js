@@ -15,7 +15,21 @@
         };
     }
 
-    function configure(canvas, image, state, devicePixelRatio = 1) {
+    function imageSize(image, logicalSize = null) {
+        const logicalWidth = Number(logicalSize?.width);
+        const logicalHeight = Number(logicalSize?.height);
+        if (logicalWidth > 0 && logicalHeight > 0) {
+            return {width: logicalWidth, height: logicalHeight};
+        }
+        return {
+            width: image.naturalWidth || image.width,
+            height: image.naturalHeight || image.height,
+        };
+    }
+
+    function configure(
+        canvas, image, state, devicePixelRatio = 1, logicalSize = null
+    ) {
         const width = canvas.parentElement.clientWidth;
         const height = canvas.parentElement.clientHeight;
         const pixelRatio = Math.min(devicePixelRatio || 1, 3);
@@ -27,8 +41,9 @@
         state.viewportHeight = height;
         state.pixelRatio = pixelRatio;
 
-        const imageWidth = image.naturalWidth || image.width;
-        const imageHeight = image.naturalHeight || image.height;
+        const {width: imageWidth, height: imageHeight} = imageSize(
+            image, logicalSize
+        );
         state.scale = Math.min(width / imageWidth, height / imageHeight);
         state.translateX = (width - imageWidth * state.scale) / 2;
         state.translateY = (height - imageHeight * state.scale) / 2;
@@ -58,7 +73,15 @@
             && viewport.y >= 0 && viewport.y <= state.viewportHeight;
     }
 
-    const api = {createState, configure, clear, applyTransform, imageToViewport, isVisible};
+    const api = {
+        createState,
+        imageSize,
+        configure,
+        clear,
+        applyTransform,
+        imageToViewport,
+        isVisible,
+    };
     globalScope.MatchingCanvas = api;
     if (typeof module !== "undefined" && module.exports) {
         module.exports = api;

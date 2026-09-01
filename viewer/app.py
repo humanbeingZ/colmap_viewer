@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import hashlib
+import io
 import ipaddress
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from PIL import Image, ImageOps
 
 from .colmap_service import ColmapService
 from .reprojection.core import (
@@ -125,8 +127,21 @@ async def read_root(request: Request):
     )
 
 
+def _matching_image_preview(path: str, max_size: int) -> bytes:
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source)
+        image.thumbnail(
+            (max_size, max_size), Image.Resampling.BILINEAR
+        )
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=82)
+        return output.getvalue()
+
+
 @app.get("/serve_image/{image_path:path}")
-async def serve_image(image_path: str):
+async def serve_image(image_path: str, max_size: Optional[int] = None):
     image_root = os.path.abspath(colmap_service.image_base_path)
     full_path = os.path.abspath(os.path.join(image_root, image_path))
 
@@ -138,16 +153,36 @@ async def serve_image(image_path: str):
     if not os.path.exists(full_path) or not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="Image not found")
 
-    import mimetypes
+    if max_size is not None:
+        if max_size < 64 or max_size > 2048:
+            raise HTTPException(
+                status_code=400,
+                detail="Image preview size must be between 64 and 2048 pixels",
+            )
+        try:
+            content = await run_in_threadpool(
+                _matching_image_preview, full_path, max_size
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail="Unable to create image preview"
+            ) from exc
+        return Response(
+            content=content,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
 
+    import mimetypes
     media_type, _ = mimetypes.guess_type(full_path)
     if media_type is None:
         media_type = "application/octet-stream"
 
-    with open(full_path, "rb") as f:
-        content = f.read()
-
-    return Response(content=content, media_type=media_type)
+    return FileResponse(
+        full_path,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 # --- New API Endpoints ---
 

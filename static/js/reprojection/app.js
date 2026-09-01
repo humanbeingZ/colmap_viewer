@@ -156,6 +156,8 @@ const reprojectionState = {
     navigationHoldDelay: null,
     navigationHoldInterval: null,
     navigationRepeatDelay: 110,
+    navigationSession: 0,
+    frameLoadResolve: null,
     navigationPreview: false,
     navigationPreviewSize: 768,
     currentInputUrl: null,
@@ -1931,8 +1933,18 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
 
 function loadReprojectionFrame(index) {
     if (!reprojectionState.images.length) {
-        return;
+        return Promise.resolve(false);
     }
+    reprojectionState.frameLoadResolve?.(false);
+    let resolveFrameLoad;
+    const frameLoaded = new Promise(resolve => { resolveFrameLoad = resolve; });
+    reprojectionState.frameLoadResolve = resolveFrameLoad;
+    const finishFrameLoad = loaded => {
+        if (reprojectionState.frameLoadResolve === resolveFrameLoad) {
+            reprojectionState.frameLoadResolve = null;
+        }
+        resolveFrameLoad(loaded);
+    };
     reprojectionState.currentIndex = Math.max(
         0, Math.min(reprojectionState.images.length - 1, Number(index))
     );
@@ -1972,6 +1984,12 @@ function loadReprojectionFrame(index) {
             `${reprojectionState.currentIndex + 1} / ${reprojectionState.images.length}: ${image.name}`
         );
         fitReprojectionSplit();
+        // Resolve only after the newly loaded image has had a chance to paint.
+        // Otherwise the async repeat loop can replace src from a microtask
+        // before the browser ever presents this frame.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => finishFrameLoad(true));
+        });
         // Geometry is deliberately delayed until image navigation settles.
         reprojectionState.navigationPointTimer = window.setTimeout(async () => {
             await renderCancellation;
@@ -2009,6 +2027,7 @@ function loadReprojectionFrame(index) {
             return;
         }
         setReprojectionStatus(`Failed to load ${image.name}`, true);
+        finishFrameLoad(false);
     };
     // Reusing the visible element lets the browser replace an obsolete image
     // request immediately instead of queueing detached preload/decode work.
@@ -2016,6 +2035,7 @@ function loadReprojectionFrame(index) {
     if (!sourceChanged && inputElement.complete && inputElement.naturalWidth > 0) {
         queueMicrotask(() => inputElement.onload?.());
     }
+    return frameLoaded;
 }
 
 function requestReprojectionPointLayer(generation = reprojectionState.generation) {
@@ -2038,14 +2058,13 @@ function loadReprojectionPointLayer(delay = 0) {
     }
 }
 
-function stepReprojection(direction) {
+async function stepReprojection(direction) {
     const nextIndex = Math.max(0, Math.min(
         reprojectionState.images.length - 1,
         reprojectionState.currentIndex + direction
     ));
     if (nextIndex !== reprojectionState.currentIndex) {
-        loadReprojectionFrame(nextIndex);
-        return true;
+        return await loadReprojectionFrame(nextIndex);
     }
     return false;
 }
@@ -2057,6 +2076,7 @@ function stopContinuousNavigation(restoreFullResolution = true) {
         && document.body.dataset.viewerMode === "reprojection";
     window.clearTimeout(reprojectionState.navigationHoldDelay);
     window.clearTimeout(reprojectionState.navigationHoldInterval);
+    reprojectionState.navigationSession += 1;
     reprojectionState.navigationHoldKey = null;
     reprojectionState.navigationHoldDelay = null;
     reprojectionState.navigationHoldInterval = null;
@@ -2073,25 +2093,37 @@ function startContinuousNavigation(key, direction) {
     }
     stopContinuousNavigation(false);
     reprojectionState.navigationHoldKey = key;
-    stepReprojection(direction);
-    reprojectionState.navigationHoldDelay = window.setTimeout(() => {
+    const session = reprojectionState.navigationSession;
+    const startedAt = performance.now();
+    const waitForNavigationTimer = (field, delay) => new Promise(resolve => {
+        reprojectionState[field] = window.setTimeout(resolve, delay);
+    });
+    const run = async () => {
+        if (!await stepReprojection(direction)) {
+            return;
+        }
+        const initialDelay = Math.max(0, 250 - (performance.now() - startedAt));
+        await waitForNavigationTimer("navigationHoldDelay", initialDelay);
+        if (reprojectionState.navigationSession !== session
+                || reprojectionState.navigationHoldKey !== key) {
+            return;
+        }
         reprojectionState.navigationPreview = true;
-        const repeat = () => {
-            if (reprojectionState.navigationHoldKey !== key) {
-                return;
-            }
-            if (!stepReprojection(direction)) {
-                return;
+        while (reprojectionState.navigationSession === session
+                && reprojectionState.navigationHoldKey === key) {
+            if (!await stepReprojection(direction)) {
+                break;
             }
             reprojectionState.navigationRepeatDelay = Math.max(
                 50, reprojectionState.navigationRepeatDelay - 8
             );
-            reprojectionState.navigationHoldInterval = window.setTimeout(
-                repeat, reprojectionState.navigationRepeatDelay
+            await waitForNavigationTimer(
+                "navigationHoldInterval",
+                reprojectionState.navigationRepeatDelay
             );
-        };
-        repeat();
-    }, 250);
+        }
+    };
+    void run();
 }
 
 function applyReprojectionFlip() {
