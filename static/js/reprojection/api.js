@@ -15,8 +15,8 @@
             this.fetch = fetchImpl;
         }
 
-        streamQuery() {
-            return `stream=${encodeURIComponent(this.getStream())}`;
+        streamQuery(stream = this.getStream()) {
+            return `stream=${encodeURIComponent(stream)}`;
         }
 
         async capabilities() {
@@ -59,9 +59,9 @@
             ));
         }
 
-        async resetGeometry() {
+        async resetGeometry(stream = this.getStream()) {
             return jsonResponse(await this.fetch(
-                `/api/reprojection/geometry?${this.streamQuery()}`,
+                `/api/reprojection/geometry?${this.streamQuery(stream)}`,
                 {method: "DELETE"}
             ));
         }

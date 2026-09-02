@@ -20,6 +20,13 @@
         return Boolean(source) && !isImage(source);
     }
 
+    function isPointCloud(source, loadedGeometries = []) {
+        return isColmap(source) || loadedGeometries.some(
+            geometry => geometry.gpuKey === source
+                && geometry.kind === "point cloud"
+        );
+    }
+
     function cycleIndex(currentIndex, optionCount, direction = 1) {
         if (optionCount <= 0) {
             return -1;
@@ -35,6 +42,7 @@
         isColmap,
         isGpuGeometry,
         isGeometry,
+        isPointCloud,
         cycleIndex,
     };
     globalScope.ReprojectionPaneSources = api;

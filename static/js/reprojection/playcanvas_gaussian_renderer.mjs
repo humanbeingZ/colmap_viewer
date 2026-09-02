@@ -78,6 +78,50 @@ export function shouldReorderGaussianData(device) {
     return !device.isWebGPU;
 }
 
+const SH_C0 = 0.28209479177387814;
+
+function displayColorByte(value) {
+    return Math.round(Math.max(0, Math.min(1, value)) * 255);
+}
+
+export function gaussianPointCloudData(resource) {
+    const positions = resource?.centers;
+    const data = resource?.gsplatData;
+    const count = Number(resource?.numSplats) || 0;
+    if (!(positions instanceof Float32Array)
+            || positions.length !== count * 3 || !data) {
+        return null;
+    }
+    const colors = new Uint8Array(count * 3);
+    const red = data.getProp?.("f_dc_0");
+    const green = data.getProp?.("f_dc_1");
+    const blue = data.getProp?.("f_dc_2");
+    if (red && green && blue) {
+        for (let index = 0; index < count; index += 1) {
+            colors[index * 3] = displayColorByte(0.5 + red[index] * SH_C0);
+            colors[index * 3 + 1] = displayColorByte(
+                0.5 + green[index] * SH_C0
+            );
+            colors[index * 3 + 2] = displayColorByte(
+                0.5 + blue[index] * SH_C0
+            );
+        }
+    } else {
+        const color = new Vec4();
+        const iterator = data.createIter?.(null, null, null, color);
+        if (!iterator) {
+            return null;
+        }
+        for (let index = 0; index < count; index += 1) {
+            iterator.read(index);
+            colors[index * 3] = displayColorByte(color.x);
+            colors[index * 3 + 1] = displayColorByte(color.y);
+            colors[index * 3 + 2] = displayColorByte(color.z);
+        }
+    }
+    return {positions, colors};
+}
+
 function loadAsset(app, url, filename) {
     return new Promise((resolve, reject) => {
         // The WebGPU raster renderer depth-sorts every complete splat set on
@@ -297,6 +341,12 @@ export class PlayCanvasGaussianRenderer {
 
     getSphere(key) {
         return this.entries.get(key)?.sphere || null;
+    }
+
+    getPointCloudData(key) {
+        return gaussianPointCloudData(
+            this.entries.get(key)?.asset?.resource
+        );
     }
 
     configureCamera(image, region = null, clippingPlanes = null) {

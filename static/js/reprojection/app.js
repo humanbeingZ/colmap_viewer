@@ -242,6 +242,10 @@ const rightServerFrameRequests = new ReprojectionLatestRequestGuard();
 let lastClippingWheelTime = -Infinity;
 let lastClippingWheelPlane = null;
 
+function rightServerRequestStream() {
+    return `${reprojectionIdentity.id}:right`;
+}
+
 function getReprojectionGpuRenderer() {
     if (!reprojectionGpuRenderer) {
         if (!globalThis.ReprojectionGpu?.ReprojectionGpuRenderer) {
@@ -277,6 +281,10 @@ const paneSourcePickers = {
 
 function rebuildPaneSourceOptions() {
     const geometries = reprojectionState.loadedGeometries;
+    const defaultHiddenSources = new Set(
+        geometries.filter(geometry => geometry.hiddenByDefault)
+            .map(geometry => geometry.gpuKey)
+    );
     const leftValue = reprojectionLeftSource.value;
     const rightValue = reprojectionRightSource.value;
 
@@ -318,8 +326,8 @@ function rebuildPaneSourceOptions() {
     if (!reprojectionRightSource.value) {
         reprojectionRightSource.value = "image";
     }
-    paneSourcePickers.left.sync();
-    paneSourcePickers.right.sync();
+    paneSourcePickers.left.sync(defaultHiddenSources);
+    paneSourcePickers.right.sync(defaultHiddenSources);
 }
 
 function applyPaneSource(pane) {
@@ -343,7 +351,20 @@ async function selectColmapForVisiblePanes(frameGeneration) {
     const selectionGeneration = ++reprojectionState.colmapSelectionGeneration;
     reprojectionState.colmapSelectionPending = true;
     try {
-        const geometry = await reprojectionApi.resetGeometry();
+        const rightUsesColmap = paneSources.isColmap(
+            reprojectionState.rightSource
+        );
+        const resets = [reprojectionApi.resetGeometry()];
+        if (rightUsesColmap) {
+            // Render supersession is isolated per pane, but geometry
+            // selection is keyed by the same server stream. Explicitly pin
+            // the right stream to COLMAP so it cannot inherit a configured
+            // external geometry default.
+            resets.push(reprojectionApi.resetGeometry(
+                rightServerRequestStream()
+            ));
+        }
+        const [geometry] = await Promise.all(resets);
         if (selectionGeneration !== reprojectionState.colmapSelectionGeneration
                 || frameGeneration !== reprojectionState.generation) {
             return;
@@ -352,7 +373,8 @@ async function selectColmapForVisiblePanes(frameGeneration) {
             applyGeometryStatus(geometry);
             requestReprojectionPointLayer(frameGeneration);
         }
-        if (paneSources.isColmap(reprojectionState.rightSource)) {
+        if (rightUsesColmap
+                && paneSources.isColmap(reprojectionState.rightSource)) {
             renderReprojectionRightPaneServer(frameGeneration);
         }
     } catch (error) {
@@ -654,6 +676,7 @@ async function renderReprojectionRightPane(generation) {
         window.devicePixelRatio,
         Math.min(reprojectionState.maxInputSize, 8192)
     );
+    configureGpuPointPixelScale(renderer, renderSize, display);
     const renderedView = currentReprojectionView();
     const region = ReprojectionGpu.zoomViewRegion(
         image,
@@ -697,8 +720,9 @@ function renderReprojectionRightPaneServer(generation) {
     }
     const renderedView = currentReprojectionView();
     const request = rightServerFrameRequests.begin();
+    const requestStream = rightServerRequestStream();
     const urls = reprojectionUrls(
-        image, reprojectionIdentity.id, currentPreviewMaxSize(), renderedView,
+        image, requestStream, currentPreviewMaxSize(), renderedView,
         null
     );
     const preload = new Image();
@@ -1463,6 +1487,12 @@ function reprojectionDisplaySize(image) {
     return {width, height};
 }
 
+function configureGpuPointPixelScale(renderer, renderSize, display) {
+    const scaleX = renderSize.width / Math.max(display.width, 1);
+    const scaleY = renderSize.height / Math.max(display.height, 1);
+    renderer.setPointPixelScale(Math.min(scaleX, scaleY));
+}
+
 function activeReprojectionInput() {
     return reprojectionLayout.value === "side"
         ? reprojectionInputSide
@@ -1661,10 +1691,23 @@ function currentPreviewMaxSize() {
         : reprojectionState.maxSize;
 }
 
-function pointRenderParameters() {
+function pointRenderParameters(image) {
+    const display = reprojectionDisplaySize(image);
+    // Server splat radii are measured in output-image pixels, whereas the
+    // WebGPU point size is measured in CSS pixels. Render the server layer at
+    // one output pixel per displayed pixel so both backends share one unit.
+    const baseMaxSize = ReprojectionPointSize.displayRenderMaxSize({
+        displayWidth: display.width,
+        displayHeight: display.height,
+        fallbackMaxSize: currentPreviewMaxSize(),
+        navigationPreview: reprojectionState.navigationPreview,
+        navigationPreviewSize: reprojectionState.navigationPreviewSize,
+        minRenderSize: 320,
+        maxRenderSize: reprojectionState.maxRenderSize,
+    });
     return ReprojectionPointSize.renderParameters({
         pointSize: reprojectionPointSize.value,
-        baseMaxSize: currentPreviewMaxSize(),
+        baseMaxSize,
         navigationPreview: reprojectionState.navigationPreview,
         maxRenderSize: reprojectionState.maxRenderSize,
     });
@@ -1694,7 +1737,7 @@ function reprojectionUrls(
             ? `&near_clip_fraction=${reprojectionState.nearClipFraction}`
                 + `&far_clip_fraction=${reprojectionState.farClipFraction}`
             : "";
-    const pointRender = pointRenderParameters();
+    const pointRender = pointRenderParameters(image);
     const display = reprojectionDisplaySize(image);
     const region = ReprojectionGpu.zoomViewRegion(
         image,
@@ -2063,18 +2106,28 @@ async function installBrowserGeometry(
             renderer.activateGeometry(duplicate.gpuKey);
             return true;
         }
-        reprojectionState.loadedGeometries.push({
-            gpuKey: geometry.key,
-            sourceId,
-            name,
+        const representations = geometry.representations || [{
+            key: geometry.key,
             kind: geometry.kind,
             count: geometry.count,
+        }];
+        representations.forEach(representation => {
+            reprojectionState.loadedGeometries.push({
+                gpuKey: representation.key,
+                sourceId,
+                name: representation.label
+                    ? `${name} (${representation.label})` : name,
+                kind: representation.kind,
+                count: representation.count,
+                hiddenByDefault: Boolean(representation.hiddenByDefault),
+            });
         });
         reprojectionState.leftSource = geometry.key;
         reprojectionState.renderMode = "gpu";
         disableReprojectionGpuCanvas();
         rebuildPaneSourceOptions();
         reprojectionLeftSource.value = geometry.key;
+        paneSourcePickers.left.sync();
         applyGeometryStatus({
             name,
             kind: geometry.kind,
@@ -2263,6 +2316,7 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         window.devicePixelRatio,
         Math.min(reprojectionState.maxInputSize, 8192)
     );
+    configureGpuPointPixelScale(renderer, renderSize, display);
     const renderedView = currentReprojectionView();
     const destinationEngine = renderer.getGeometryEngine(
         reprojectionState.leftSource
@@ -2679,20 +2733,59 @@ function setReprojectionPointSize(value) {
     const size = ReprojectionPointSize.normalize(value);
     reprojectionPointSize.value = size;
     reprojectionGpuRenderer?.setPointSize(size);
+    const leftSource = reprojectionState.leftSource;
+    const rightSource = reprojectionState.rightSource;
+    const leftIsPoints = paneSources.isPointCloud(
+        leftSource, reprojectionState.loadedGeometries
+    );
+    const rightIsPoints = paneSources.isPointCloud(
+        rightSource, reprojectionState.loadedGeometries
+    );
+    const generation = reprojectionState.generation;
+    const delay = size < 1 ? 60 : 0;
+    const refreshServerPanes = () => {
+        if (generation !== reprojectionState.generation) {
+            return;
+        }
+        if (reprojectionState.renderMode === "server"
+                && paneSources.isPointCloud(
+                    reprojectionState.leftSource,
+                    reprojectionState.loadedGeometries
+                )
+                && !reprojectionState.colmapSelectionPending) {
+            requestReprojectionPointLayer(generation);
+        }
+        if (paneSources.isColmap(reprojectionState.rightSource)) {
+            renderReprojectionRightPaneServer(generation);
+        }
+    };
+    const scheduleServerRefresh = () => {
+        window.clearTimeout(reprojectionState.pointSizeRenderTimer);
+        if (delay > 0) {
+            reprojectionState.pointSizeRenderTimer = window.setTimeout(
+                refreshServerPanes, delay
+            );
+        } else {
+            reprojectionState.pointSizeRenderTimer = null;
+            refreshServerPanes();
+        }
+    };
     if (reprojectionState.renderMode === "gpu") {
-        renderReprojectionGpuFrame(reprojectionState.generation);
-        return;
-    }
-    if (paneSources.isColmap(reprojectionState.leftSource)
-            && reprojectionState.colmapSelectionPending) {
+        if (leftIsPoints
+                || (rightIsPoints && paneSources.isGpuGeometry(rightSource))) {
+            renderReprojectionGpuFrame(generation);
+        }
+        if (rightIsPoints && paneSources.isColmap(rightSource)) {
+            scheduleServerRefresh();
+        }
         return;
     }
     // Normal sizes reuse cached projection/splat data and should respond on
     // every wheel step. Only fractional sizes require a cold supersampled
     // render, so coalesce that short three-step range.
-    loadReprojectionPointLayer(size < 1 ? 60 : 0);
-    if (paneSources.isGpuGeometry(reprojectionState.rightSource)) {
-        renderReprojectionRightPane(reprojectionState.generation);
+    scheduleServerRefresh();
+    if (rightIsPoints && paneSources.isGpuGeometry(rightSource)) {
+        renderReprojectionRightPane(generation);
     }
 }
 

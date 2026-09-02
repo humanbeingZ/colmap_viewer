@@ -6,6 +6,34 @@ assert.strictEqual(pointSize.normalize(0.6), 0.5);
 assert.strictEqual(pointSize.step(3, 1), 5);
 assert.strictEqual(pointSize.step(1, -1), 0.75);
 
+assert.strictEqual(pointSize.displayRenderMaxSize({
+    displayWidth: 799.2,
+    displayHeight: 450,
+    fallbackMaxSize: 1600,
+    maxRenderSize: 4096,
+}), 800);
+assert.strictEqual(pointSize.displayRenderMaxSize({
+    displayWidth: 799.2,
+    displayHeight: 450,
+    fallbackMaxSize: 1600,
+    navigationPreview: true,
+    navigationPreviewSize: 640,
+    maxRenderSize: 4096,
+}), 640);
+assert.strictEqual(pointSize.displayRenderMaxSize({
+    displayWidth: 0,
+    displayHeight: 0,
+    fallbackMaxSize: 1600,
+    maxRenderSize: 1024,
+}), 1024);
+assert.strictEqual(pointSize.displayRenderMaxSize({
+    displayWidth: 200,
+    displayHeight: 100,
+    fallbackMaxSize: 1600,
+    minRenderSize: 320,
+    maxRenderSize: 4096,
+}), 320);
+
 assert.deepStrictEqual(pointSize.renderParameters({
     pointSize: 3,
     baseMaxSize: 1600,

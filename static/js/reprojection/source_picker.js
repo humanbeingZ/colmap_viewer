@@ -8,6 +8,7 @@
             this.cycleIndex = cycleIndex;
             this.onSelect = onSelect;
             this.hiddenSources = new Set();
+            this.knownSources = new Set();
             this.trigger = picker.querySelector(".reprojection-source-trigger");
             this.menu = picker.querySelector(".reprojection-source-menu");
             this.trigger.addEventListener("click", () => this.toggle());
@@ -80,14 +81,25 @@
             this.trigger.focus();
         }
 
-        sync() {
-            const options = [...this.select.options];
-            const optionValues = new Set(options.map(option => option.value));
+        registerSources(optionValues, defaultHiddenSources = new Set()) {
+            for (const value of optionValues) {
+                if (!this.knownSources.has(value)
+                        && defaultHiddenSources.has(value)) {
+                    this.hiddenSources.add(value);
+                }
+            }
+            this.knownSources = optionValues;
             for (const hiddenSource of this.hiddenSources) {
                 if (!optionValues.has(hiddenSource)) {
                     this.hiddenSources.delete(hiddenSource);
                 }
             }
+        }
+
+        sync(defaultHiddenSources = new Set()) {
+            const options = [...this.select.options];
+            const optionValues = new Set(options.map(option => option.value));
+            this.registerSources(optionValues, defaultHiddenSources);
             const selected = options.find(
                 option => option.value === this.select.value
             );

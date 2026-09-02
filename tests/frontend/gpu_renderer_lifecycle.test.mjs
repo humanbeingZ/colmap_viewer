@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
     BufferGeometry,
     Float32BufferAttribute,
+    Scene,
     Uint8BufferAttribute,
 } from "three/webgpu";
 import {uniform} from "three/tsl";
@@ -27,8 +28,70 @@ function rendererHarness() {
 
 {
     const renderer = rendererHarness();
+    renderer._nextId = 0;
+    renderer.scene = new Scene();
+    renderer.activeKey = null;
+    renderer.object = null;
+    renderer.kind = null;
+    renderer.pointSizeNode = uniform(1);
+    renderer.pointColorModeNode = uniform(0);
+    renderer.pointDepthNearNode = uniform(0);
+    renderer.pointDepthFarNode = uniform(1);
+    const activations = [];
+    const disposals = [];
+    let destroyed = false;
+    renderer.gaussianRenderer = {
+        activate: key => activations.push(key),
+        dispose: key => disposals.push(key),
+        destroy: () => { destroyed = true; },
+    };
+
+    const gaussianPointPositions = new Float32Array([
+        0, 0, 1, 1, 0, 1,
+    ]);
+    const installed = renderer.installGaussian({
+        key: "adapter-key",
+        count: 2,
+        pointCloud: {
+            positions: gaussianPointPositions,
+            colors: new Uint8Array([255, 0, 0, 0, 255, 0]),
+        },
+    });
+    assert.equal(installed.key, "0");
+    assert.deepEqual(installed.representations.map(item => ({
+        key: item.key,
+        kind: item.kind,
+        hiddenByDefault: Boolean(item.hiddenByDefault),
+    })), [
+        {key: "0", kind: "gaussian splats", hiddenByDefault: false},
+        {key: "1", kind: "point cloud", hiddenByDefault: true},
+    ]);
+    assert.equal(renderer.geometries.get("0").engine, "playcanvas");
+    assert.equal(renderer.geometries.get("1").engine, "three");
+    const installedPointGeometry = renderer.geometries.get("1")
+        .object.userData.pointGeometry;
+    assert.equal(
+        installedPointGeometry.getAttribute("position").array,
+        gaussianPointPositions
+    );
+    assert.equal(
+        renderer.geometries.get("1").object.material.positionNode.value.array,
+        gaussianPointPositions
+    );
+    assert.equal(installedPointGeometry.userData.vertexColorsAreSrgb, true);
+    assert.deepEqual(activations, ["adapter-key"]);
+
+    renderer._disposeGeometry("1");
+    assert.equal(renderer.geometries.size, 0);
+    assert.deepEqual(disposals, ["adapter-key"]);
+    assert.equal(destroyed, true);
+}
+
+{
+    const renderer = rendererHarness();
     renderer.pointSize = 3;
     renderer.pointSizeNode = uniform(renderer.pointSize);
+    renderer.pointPixelScaleNode = uniform(1);
     renderer.pointColorMode = "rgb";
     renderer.pointColorModeNode = uniform(0);
     renderer.pointDepthNearNode = uniform(0);
@@ -58,11 +121,15 @@ function rendererHarness() {
     assert.equal(instancedPositions.isInstancedBufferAttribute, true);
     assert.equal(instancedPositions.array, positions.array);
     assert.ok(points.material.colorNode);
-    assert.equal(points.material.sizeNode, renderer.pointSizeNode);
+    assert.ok(points.material.maskNode);
+    assert.ok(points.material.opacityNode);
+    assert.ok(points.material.sizeNode);
 
     renderer.setPointSize(7);
     assert.equal(renderer.pointSize, 7);
     assert.equal(renderer.pointSizeNode.value, 7);
+    renderer.setPointPixelScale(2);
+    assert.equal(renderer.pointPixelScaleNode.value, 2);
 
     assert.equal(renderer.setPointColorMode("depth"), "depth");
     assert.equal(renderer.pointColorModeNode.value, 1);

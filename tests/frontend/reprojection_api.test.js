@@ -17,6 +17,7 @@ const fetchImpl = async (url, options = {}) => {
     await api.loadLocalGeometry("/data/mesh file.ply");
     await api.activateConfiguredGeometry("/activate?token=secret");
     await api.resetGeometry();
+    await api.resetGeometry("viewer id:right");
     await api.heartbeat();
     await api.cancelRender();
 
@@ -35,8 +36,13 @@ const fetchImpl = async (url, options = {}) => {
     );
     assert.strictEqual(requests[3].options.method, "POST");
     assert.strictEqual(requests[4].options.method, "DELETE");
-    assert.strictEqual(requests[5].options.method, "POST");
+    assert.strictEqual(
+        requests[5].url,
+        "/api/reprojection/geometry?stream=viewer%20id%3Aright"
+    );
+    assert.strictEqual(requests[5].options.method, "DELETE");
     assert.strictEqual(requests[6].options.method, "POST");
+    assert.strictEqual(requests[7].options.method, "POST");
 
     console.log("reprojection API tests passed");
 })().catch(error => {

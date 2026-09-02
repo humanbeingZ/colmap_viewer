@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
     PlayCanvasGaussianRenderer,
+    gaussianPointCloudData,
     playCanvasCameraWorldData,
     playCanvasProjectionData,
     shouldReorderGaussianData,
@@ -35,6 +36,37 @@ assert.deepEqual(cameraWorld.map(value => Object.is(value, -0) ? 0 : value), [
 ]);
 assert.equal(shouldReorderGaussianData({isWebGPU: true}), false);
 assert.equal(shouldReorderGaussianData({isWebGPU: false}), true);
+
+{
+    const positions = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const properties = {
+        f_dc_0: new Float32Array([0, 0]),
+        f_dc_1: new Float32Array([0, 0]),
+        f_dc_2: new Float32Array([0, 0]),
+    };
+    const pointCloud = gaussianPointCloudData({
+        centers: positions,
+        numSplats: 2,
+        gsplatData: {getProp: name => properties[name]},
+    });
+    assert.equal(pointCloud.positions, positions);
+    assert.deepEqual([...pointCloud.colors], [128, 128, 128, 128, 128, 128]);
+}
+
+{
+    const positions = new Float32Array([1, 2, 3]);
+    const pointCloud = gaussianPointCloudData({
+        centers: positions,
+        numSplats: 1,
+        gsplatData: {
+            createIter: (_position, _rotation, _scale, color) => ({
+                read: () => color.set(0.25, 0.5, 0.75, 1),
+            }),
+        },
+    });
+    assert.equal(pointCloud.positions, positions);
+    assert.deepEqual([...pointCloud.colors], [64, 128, 191]);
+}
 
 const uninitialized = Object.create(PlayCanvasGaussianRenderer.prototype);
 uninitialized.app = null;

@@ -16,6 +16,7 @@ picker.select = {
     ],
 };
 picker.hiddenSources = new Set(["colmap"]);
+picker.knownSources = new Set(["image", "colmap"]);
 picker.cycleIndex = paneSources.cycleIndex;
 picker.onSelect = () => {};
 
@@ -25,5 +26,15 @@ assert.strictEqual(picker.nextValue(-1), "mesh");
 assert.strictEqual(picker.cycle(1), true);
 assert.strictEqual(picker.select.value, "mesh");
 assert.strictEqual(picker.nextValue(1), "image");
+
+picker.registerSources(
+    new Set(["image", "colmap", "mesh"]), new Set(["mesh"])
+);
+assert.deepStrictEqual(picker.visibleValues(), ["image"]);
+picker.hiddenSources.delete("mesh");
+picker.registerSources(
+    new Set(["image", "colmap", "mesh"]), new Set(["mesh"])
+);
+assert.deepStrictEqual(picker.visibleValues(), ["image", "mesh"]);
 
 console.log("reprojection source picker tests passed");

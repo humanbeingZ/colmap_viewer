@@ -29,6 +29,35 @@
         return SIZES[index];
     }
 
+    function displayRenderMaxSize({
+        displayWidth,
+        displayHeight,
+        fallbackMaxSize,
+        navigationPreview = false,
+        navigationPreviewSize = fallbackMaxSize,
+        minRenderSize = 1,
+        maxRenderSize,
+    }) {
+        const displayMax = Math.max(
+            Number(displayWidth) || 0,
+            Number(displayHeight) || 0
+        );
+        let maxSize = displayMax > 0
+            ? Math.ceil(displayMax)
+            : Math.max(1, Number(fallbackMaxSize) || 1);
+        if (navigationPreview) {
+            maxSize = Math.min(
+                maxSize,
+                Math.max(1, Number(navigationPreviewSize) || 1)
+            );
+        }
+        const limit = Number(maxRenderSize);
+        if (Number.isFinite(limit) && limit > 0) {
+            maxSize = Math.min(maxSize, limit);
+        }
+        return Math.max(Number(minRenderSize) || 1, Math.round(maxSize));
+    }
+
     function renderParameters({
         pointSize,
         baseMaxSize,
@@ -49,7 +78,7 @@
         };
     }
 
-    const api = {normalize, renderParameters, step};
+    const api = {displayRenderMaxSize, normalize, renderParameters, step};
     globalScope.ReprojectionPointSize = api;
     if (typeof module !== "undefined" && module.exports) {
         module.exports = api;

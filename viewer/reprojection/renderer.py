@@ -48,7 +48,10 @@ class ReprojectionRenderer:
                 f"{ReprojectionRenderer.MIN_PREVIEW_SIZE} and "
                 f"{ReprojectionRenderer.MAX_PREVIEW_SIZE}"
             )
-        scale = min(1.0, max_size / max(camera.width, camera.height))
+        # Geometry can be projected above the source image's native
+        # resolution. Fractional display-sized points rely on this
+        # supersampling before the browser scales the transparent layer down.
+        scale = max_size / max(camera.width, camera.height)
         width = max(1, round(camera.width * scale))
         height = max(1, round(camera.height * scale))
         return width, height, scale

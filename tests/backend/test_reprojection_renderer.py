@@ -85,6 +85,13 @@ class ReprojectionRendererTest(unittest.TestCase):
             depth_fractions=depth_fractions,
         )
 
+    def test_preview_geometry_supports_point_supersampling(self):
+        width, height, scale = self.renderer.preview_geometry(
+            self.camera, 640
+        )
+        self.assertEqual((width, height), (640, 640))
+        self.assertEqual(scale, 2.0)
+
     def test_nearest_point_wins_at_the_same_pixel(self):
         pixels = decode(self.render(
             [[0, 0, 2], [0, 0, 1]],

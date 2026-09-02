@@ -6,6 +6,7 @@ import {
     modelViewMatrix,
     normalView,
     sRGBTransferEOTF,
+    shapeCircle,
     texture,
     uniform,
     varying,
@@ -153,6 +154,7 @@ export class ReprojectionGpuRenderer {
         this.kind = null;
         this.pointSize = 1;
         this.pointSizeNode = uniform(this.pointSize);
+        this.pointPixelScaleNode = uniform(1);
         this.pointColorMode = "rgb";
         this.pointColorModeNode = uniform(POINT_COLOR_MODE_VALUES.rgb);
         this.pointDepthNearNode = uniform(0);
@@ -327,12 +329,15 @@ export class ReprojectionGpuRenderer {
         const color = geometry.getAttribute("color");
         const instancedPosition = instancedAttributeView(position);
         const positionNode = instancedBufferAttribute(instancedPosition);
-        const sourceColor = color
-            // PLYLoader has already converted stored sRGB colors to Three's
-            // linear working space. Preserve the attribute's normalized flag
-            // while reading one color per sprite instance.
+        let sourceColor = color
+            // Preserve the attribute's normalized flag while reading one
+            // color per sprite instance. PLYLoader colors are already linear;
+            // Gaussian DC colors are tagged and decoded immediately below.
             ? instancedBufferAttribute(instancedAttributeView(color)).rgb
             : uniform(new THREE.Color(0xb0b0b0));
+        if (color && geometry.userData.vertexColorsAreSrgb) {
+            sourceColor = sRGBTransferEOTF(sourceColor);
+        }
 
         // Match the server renderer's four-stop display-sRGB depth palette.
         // Visible-depth percentiles are supplied by configureCamera() only in
@@ -366,11 +371,18 @@ export class ReprojectionGpuRenderer {
             this.pointColorModeNode.equal(POINT_COLOR_MODE_VALUES.depth)
                 .select(depthColor, sourceColor)
         );
+        // The server renderer expands points with an elliptical OpenCV
+        // kernel. Mask the instanced sprite's square quad to the equivalent
+        // circular footprint, including antialiasing when MSAA is available.
+        // The mask also prevents transparent corners from writing depth.
+        const pointShape = shapeCircle();
         const materialOptions = {
             color: 0xffffff,
             colorNode: selectedColor,
+            maskNode: pointShape.greaterThan(0),
+            opacityNode: pointShape,
             positionNode,
-            sizeNode: this.pointSizeNode,
+            sizeNode: this.pointSizeNode.mul(this.pointPixelScaleNode),
             sizeAttenuation: false,
         };
         const sprite = new THREE.Sprite(
@@ -681,15 +693,78 @@ export class ReprojectionGpuRenderer {
     }
 
     installGaussian(loaded) {
-        const key = String(this._nextId++);
-        this.geometries.set(key, {
+        try {
+            const pointCloud = loaded.pointCloud
+                || this.gaussianRenderer.getPointCloudData?.(loaded.key);
+            return this._installGaussian({...loaded, pointCloud});
+        } catch (error) {
+            this.gaussianRenderer.dispose(loaded.key);
+            throw error;
+        }
+    }
+
+    _installGaussian(loaded) {
+        const gaussianKey = String(this._nextId++);
+        const pointKey = loaded.pointCloud ? String(this._nextId++) : null;
+        const linkedKeys = pointKey
+            ? [gaussianKey, pointKey] : [gaussianKey];
+        let pointObject = null;
+        if (pointKey) {
+            const pointGeometry = new THREE.BufferGeometry();
+            pointGeometry.setAttribute(
+                "position", new THREE.BufferAttribute(
+                    loaded.pointCloud.positions, 3
+                )
+            );
+            pointGeometry.userData.vertexColorsAreSrgb = true;
+            pointGeometry.setAttribute(
+                "color", new THREE.BufferAttribute(
+                    loaded.pointCloud.colors, 3, true
+                )
+            );
+            pointGeometry.computeBoundingSphere();
+            pointObject = this.createPointCloudSprite(pointGeometry);
+            pointObject.visible = false;
+        }
+        this.geometries.set(gaussianKey, {
             adapterKey: loaded.key,
             count: loaded.count,
             kind: "gaussian splats",
             engine: "playcanvas",
+            linkedKeys,
         });
-        this.activateGeometry(key);
-        return {kind: "gaussian splats", count: loaded.count, key};
+        if (pointKey) {
+            this.scene.add(pointObject);
+            this.geometries.set(pointKey, {
+                object: pointObject,
+                count: loaded.count,
+                kind: "point cloud",
+                engine: "three",
+                linkedKeys,
+            });
+        }
+        this.activateGeometry(gaussianKey);
+        const representations = [{
+            key: gaussianKey,
+            kind: "gaussian splats",
+            count: loaded.count,
+            label: "Gaussian",
+        }];
+        if (pointKey) {
+            representations.push({
+                key: pointKey,
+                kind: "point cloud",
+                count: loaded.count,
+                label: "points",
+                hiddenByDefault: true,
+            });
+        }
+        return {
+            kind: "gaussian splats",
+            count: loaded.count,
+            key: gaussianKey,
+            representations,
+        };
     }
 
     createMeshClippingGroup() {
@@ -1185,6 +1260,10 @@ export class ReprojectionGpuRenderer {
         this.pointSizeNode.value = this.pointSize;
     }
 
+    setPointPixelScale(scale) {
+        this.pointPixelScaleNode.value = Math.max(Number(scale) || 1, 1e-6);
+    }
+
     setPointColorMode(mode) {
         this.pointColorMode = normalizedPointColorMode(mode);
         this.pointColorModeNode.value = POINT_COLOR_MODE_VALUES[
@@ -1407,15 +1486,23 @@ export class ReprojectionGpuRenderer {
         if (!entry) {
             return;
         }
-        if (entry.engine === "playcanvas") {
-            this.gaussianRenderer.dispose(entry.adapterKey);
-        } else {
-            this.scene.remove(entry.object);
-            disposeObject(entry.object);
+        const keys = entry.linkedKeys || [key];
+        const activeRemoved = keys.includes(this.activeKey);
+        for (const linkedKey of keys) {
+            const linked = this.geometries.get(linkedKey);
+            if (!linked) {
+                continue;
+            }
+            if (linked.engine === "playcanvas") {
+                this.gaussianRenderer.dispose(linked.adapterKey);
+            } else {
+                this.scene.remove(linked.object);
+                disposeObject(linked.object);
+            }
+            this.geometries.delete(linkedKey);
         }
-        this.geometries.delete(key);
         this._releaseGaussianRendererIfUnused();
-        if (this.activeKey === key) {
+        if (activeRemoved) {
             const remaining = [...this.geometries.keys()];
             if (remaining.length) {
                 this.activateGeometry(remaining[remaining.length - 1]);
