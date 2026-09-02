@@ -347,6 +347,18 @@ export class PlayCanvasGaussianRenderer {
             this.app.once("postrender", resolve);
             this.app.renderNextFrame = true;
         });
+        // Application.postrender fires before the WebGPU queue is guaranteed
+        // to have finished a large GPU splat sort and its raster pass. Do not
+        // let the DOM compositor expose this canvas while its clear frame can
+        // still precede the completed Gaussian frame.
+        const gpuQueue = this.app.graphicsDevice?.wgpu?.queue;
+        if (gpuQueue?.onSubmittedWorkDone) {
+            await gpuQueue.onSubmittedWorkDone();
+        } else {
+            // WebGL has no promise-based queue fence. finish() is used only at
+            // source-switch/render completion, not on an animation loop.
+            this.app.graphicsDevice?.gl?.finish?.();
+        }
     }
 
     async capture(

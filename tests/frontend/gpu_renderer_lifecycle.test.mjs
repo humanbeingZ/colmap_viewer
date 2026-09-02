@@ -21,6 +21,35 @@ function rendererHarness() {
 
 {
     const renderer = rendererHarness();
+    const activations = [];
+    renderer.gaussianRenderer = {
+        activate: key => activations.push(key),
+    };
+    renderer.activeKey = "gaussian";
+    renderer.object = null;
+    renderer.kind = "gaussian splats";
+    renderer.geometries.set("gaussian", {
+        engine: "playcanvas",
+        adapterKey: "splat-adapter",
+    });
+    const meshObject = {visible: false};
+    renderer.geometries.set("mesh", {
+        engine: "three",
+        object: meshObject,
+        kind: "triangle mesh",
+    });
+
+    renderer.activateGeometry("mesh");
+    assert.deepEqual(activations, []);
+    assert.equal(meshObject.visible, true);
+    assert.equal(renderer.activeKey, "mesh");
+
+    renderer.activateGeometry(null);
+    assert.deepEqual(activations, [null]);
+}
+
+{
+    const renderer = rendererHarness();
     let resolveInitialization;
     const initialized = {destroy() {}};
     renderer._createGaussianRenderer = () => new Promise(resolve => {
@@ -128,6 +157,54 @@ function rendererHarness() {
     );
     assert.equal(rendered, false);
     assert.equal(renders, 0);
+}
+
+{
+    const renderer = rendererHarness();
+    renderer._operationQueue = Promise.resolve();
+    renderer.activeKey = "mesh";
+    renderer.geometries.set("mesh", {});
+    renderer.geometries.set("gaussian", {});
+    renderer.activateGeometry = key => {
+        renderer.activeKey = key;
+    };
+    renderer._render = async () => {
+        assert.equal(renderer.activeKey, "gaussian");
+    };
+
+    const rendered = await renderer.renderGeometry(
+        "gaussian", {}, 640, 480
+    );
+    assert.equal(rendered, true);
+    assert.equal(renderer.activeKey, "gaussian");
+}
+
+{
+    const renderer = rendererHarness();
+    renderer._operationQueue = Promise.resolve();
+    renderer.activeKey = "mesh";
+    renderer.geometries.set("mesh", {});
+    renderer.geometries.set("gaussian", {});
+    renderer.activateGeometry = key => {
+        renderer.activeKey = key;
+    };
+    let finishRender;
+    let markStarted;
+    const started = new Promise(resolve => { markStarted = resolve; });
+    renderer._render = () => new Promise(resolve => {
+        finishRender = resolve;
+        markStarted();
+    });
+    let current = true;
+
+    const pending = renderer.renderGeometry(
+        "gaussian", {}, 640, 480, null, false, () => current
+    );
+    await started;
+    current = false;
+    finishRender();
+    assert.equal(await pending, false);
+    assert.equal(renderer.activeKey, "mesh");
 }
 
 {

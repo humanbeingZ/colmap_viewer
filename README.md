@@ -169,6 +169,10 @@ after ten minutes without activity.
 Use **Use COLMAP points3D** to restore the reconstruction's original sparse
 points in the current viewer.
 
+To inspect a renderer handoff, add `gpu_transition_debug_ms=<milliseconds>` to
+the viewer URL. The viewer pauses before and after exposing the incoming frame
+and labels both stages; omit the parameter during normal use.
+
 ## API Endpoints
 
 The following API endpoints are available:

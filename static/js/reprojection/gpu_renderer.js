@@ -646,7 +646,11 @@ export class ReprojectionGpuRenderer {
             this.object = null;
             this.kind = entry.kind;
         } else if (entry) {
-            this.gaussianRenderer?.activate(null);
+            // PlayCanvas owns a separate canvas from Three.js. Leave its last
+            // Gaussian frame untouched while the mesh engine renders so that
+            // the DOM handoff can retain that real outgoing frame. Calling
+            // activate(null) here schedules a PlayCanvas clear and turns the
+            // still-visible transition canvas black.
             entry.object.visible = true;
             this.object = entry.object;
             this.kind = entry.kind;
@@ -914,11 +918,20 @@ export class ReprojectionGpuRenderer {
             this.activateGeometry(key);
             try {
                 await this._render(image, width, height, region, clipFrame);
-                return isCurrent();
-            } finally {
-                if (previousKey !== key && this.geometries.has(previousKey)) {
-                    this.activateGeometry(previousKey);
+                const current = isCurrent();
+                if (!current && previousKey !== key) {
+                    this.activateGeometry(
+                        this.geometries.has(previousKey) ? previousKey : null
+                    );
                 }
+                return current;
+            } catch (error) {
+                if (previousKey !== key) {
+                    this.activateGeometry(
+                        this.geometries.has(previousKey) ? previousKey : null
+                    );
+                }
+                throw error;
             }
         });
     }

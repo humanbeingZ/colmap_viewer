@@ -46,4 +46,38 @@ assert.doesNotThrow(() => uninitialized.destroy());
 assert.equal(uninitialized.destroyed, true);
 assert.equal(uninitialized.cameraEntity, null);
 
+{
+    const renderer = Object.create(PlayCanvasGaussianRenderer.prototype);
+    renderer.ready = Promise.resolve();
+    renderer.activate = () => {};
+    renderer.configureCamera = () => {};
+    renderer.cameraEntity = {camera: {scissorRect: null}};
+    let postrender;
+    let finishGpuWork;
+    const gpuWork = new Promise(resolve => { finishGpuWork = resolve; });
+    renderer.app = {
+        graphicsDevice: {
+            wgpu: {queue: {onSubmittedWorkDone: () => gpuWork}},
+        },
+        once: (event, callback) => {
+            assert.equal(event, "postrender");
+            postrender = callback;
+        },
+        setCanvasResolution: () => {},
+        renderNextFrame: false,
+    };
+
+    let completed = false;
+    const pending = renderer.render("gaussian", {}, 640, 480)
+        .then(() => { completed = true; });
+    await Promise.resolve();
+    assert.equal(renderer.app.renderNextFrame, true);
+    postrender();
+    await Promise.resolve();
+    assert.equal(completed, false);
+    finishGpuWork();
+    await pending;
+    assert.equal(completed, true);
+}
+
 console.log("PlayCanvas Gaussian renderer camera and lifecycle tests passed");
