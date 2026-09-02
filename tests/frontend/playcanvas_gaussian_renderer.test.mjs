@@ -80,4 +80,26 @@ assert.equal(uninitialized.cameraEntity, null);
     assert.equal(completed, true);
 }
 
+{
+    const renderer = Object.create(PlayCanvasGaussianRenderer.prototype);
+    renderer.canvas = {name: "gaussian-canvas"};
+    let rendered = false;
+    renderer.render = async () => { rendered = true; };
+    const previousCreateImageBitmap = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = async source => ({source});
+    try {
+        const frame = await renderer.captureFrame(
+            "gaussian", {}, 640, 480
+        );
+        assert.equal(rendered, true);
+        assert.equal(frame.source, renderer.canvas);
+    } finally {
+        if (previousCreateImageBitmap) {
+            globalThis.createImageBitmap = previousCreateImageBitmap;
+        } else {
+            delete globalThis.createImageBitmap;
+        }
+    }
+}
+
 console.log("PlayCanvas Gaussian renderer camera and lifecycle tests passed");

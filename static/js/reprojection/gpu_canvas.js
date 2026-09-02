@@ -26,8 +26,10 @@
         leftRenderedSource,
         selectedIsGpu,
         leftIsGpu,
+        sharesLeftSurface,
     }) {
-        const canShareLeft = leftIsGpu
+        const canShareLeft = sharesLeftSurface
+            && leftIsGpu
             && selectedIsGpu
             && selectedSource === leftSelectedSource
             && leftRenderedSource === leftSelectedSource;

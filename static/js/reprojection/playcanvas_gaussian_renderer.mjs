@@ -361,14 +361,14 @@ export class PlayCanvasGaussianRenderer {
         }
     }
 
-    async capture(
+    async captureFrame(
         key, image, width, height, region = null, clipFrame = false,
         clippingPlanes = null
     ) {
         await this.render(
             key, image, width, height, region, clipFrame, clippingPlanes
         );
-        return new Promise(resolve => this.canvas.toBlob(resolve, "image/png"));
+        return createImageBitmap(this.canvas);
     }
 
     dispose(key = undefined) {

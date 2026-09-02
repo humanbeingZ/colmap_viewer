@@ -1159,15 +1159,15 @@ export class ReprojectionGpuRenderer {
         return this.renderGeometry(key, image, width, height, region);
     }
 
-    captureGeometry(
+    captureGeometryFrame(
         key, image, width, height, region = null, clipFrame = false
     ) {
-        return this.runGpuOperation(() => this._captureGeometry(
+        return this.runGpuOperation(() => this._captureGeometryFrame(
             key, image, width, height, region, clipFrame
         ));
     }
 
-    async _captureGeometry(
+    async _captureGeometryFrame(
         key, image, width, height, region, clipFrame
     ) {
         const entry = this.geometries.get(key);
@@ -1179,7 +1179,7 @@ export class ReprojectionGpuRenderer {
             this.activateGeometry(key);
             try {
                 const clippingPlanes = this.clippingPlanesForImage(image);
-                return await this.gaussianRenderer.capture(
+                return await this.gaussianRenderer.captureFrame(
                     entry.adapterKey, image, width, height, region, clipFrame,
                     clippingPlanes
                 );
@@ -1244,9 +1244,7 @@ export class ReprojectionGpuRenderer {
             this._captureCanvas.width = width;
             this._captureCanvas.height = height;
             this._captureCtx.putImageData(imageData, 0, 0);
-            return new Promise(resolve =>
-                this._captureCanvas.toBlob(resolve, "image/png")
-            );
+            return createImageBitmap(this._captureCanvas);
         } finally {
             if (previousKey !== key && this.geometries.has(previousKey)) {
                 this.activateGeometry(previousKey);
