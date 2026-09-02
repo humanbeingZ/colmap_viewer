@@ -27,6 +27,19 @@ class FakeCamera:
     params = np.asarray([100, 100, 160, 160], dtype=np.float64)
 
 
+class FakeDistortedCamera:
+    width = 320
+    height = 320
+    model_name = "OPENCV"
+
+    @staticmethod
+    def img_from_cam(xyz):
+        return np.column_stack((
+            100 * xyz[:, 0] / xyz[:, 2] + 160,
+            100 * xyz[:, 1] / xyz[:, 2] + 160,
+        ))
+
+
 def geometry(xyz, rgb, token="test"):
     return GeometryData(
         xyz=np.asarray(xyz, dtype=np.float32),
@@ -78,6 +91,30 @@ class ReprojectionRendererTest(unittest.TestCase):
             [[255, 0, 0], [0, 255, 0]],
         ))
         np.testing.assert_array_equal(pixels[160, 160], [0, 255, 0])
+
+    def test_uses_colmap_corner_based_pixel_coordinates(self):
+        pixels = decode_rgba(self.render(
+            [
+                [0.0075, 0.0075, 1],
+                [1.5975, 1.5975, 1],
+                [-1.6025, -1.4975, 1],
+            ],
+            [[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+        ))
+        np.testing.assert_array_equal(pixels[160, 160], [255, 0, 0, 255])
+        np.testing.assert_array_equal(pixels[161, 161], [0, 0, 0, 0])
+        np.testing.assert_array_equal(pixels[319, 319], [0, 255, 0, 255])
+        np.testing.assert_array_equal(pixels[10, 0], [0, 0, 0, 0])
+
+    def test_distorted_camera_uses_colmap_pixel_coordinates(self):
+        self.camera = FakeDistortedCamera()
+        pixels = decode_rgba(self.render(
+            [[0.0075, 0.0075, 1], [1.5975, 1.5975, 1]],
+            [[255, 0, 0], [0, 255, 0]],
+        ))
+        np.testing.assert_array_equal(pixels[160, 160], [255, 0, 0, 255])
+        np.testing.assert_array_equal(pixels[161, 161], [0, 0, 0, 0])
+        np.testing.assert_array_equal(pixels[319, 319], [0, 255, 0, 255])
 
     def test_depth_range_clips_points_before_projection(self):
         pixels = decode(self.render(

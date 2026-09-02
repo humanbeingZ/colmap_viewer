@@ -219,12 +219,13 @@ class ReprojectionRenderer:
                 else:
                     fx, cx, cy = camera.params
                     fy = fx
-                # Match the final preview-pixel bounds exactly so no second
-                # in-frame filtering/copy is needed after projection.
-                left = ((projection_left - 0.5 / region_scale_x) - cx) / fx
-                right = ((projection_right - 0.5 / region_scale_x) - cx) / fx
-                top = ((projection_top - 0.5 / region_scale_y) - cy) / fy
-                bottom = ((projection_bottom - 0.5 / region_scale_y) - cy) / fy
+                # COLMAP coordinates are corner-based: pixel (x, y) covers
+                # [x, x + 1) by [y, y + 1). Match those output bounds exactly
+                # so no second in-frame filtering/copy is needed.
+                left = (projection_left - cx) / fx
+                right = (projection_right - cx) / fx
+                top = (projection_top - cy) / fy
+                bottom = (projection_bottom - cy) / fy
                 visible = ne.evaluate(
                     "(z > 1e-6) & (x >= left*z) & (x < right*z) "
                     "& (y >= top*z) & (y < bottom*z)",
@@ -272,8 +273,8 @@ class ReprojectionRenderer:
                             "output_scale": region_scale_y,
                         },
                     )
-                    x = np.rint(u).astype(np.int64, copy=False)
-                    y = np.rint(v).astype(np.int64, copy=False)
+                    x = np.floor(u).astype(np.int64, copy=False)
+                    y = np.floor(v).astype(np.int64, copy=False)
                     # Only floating-point boundary noise can reach the clamp;
                     # the fused frustum test above already enforces bounds.
                     np.clip(x, 0, width - 1, out=x)
@@ -295,8 +296,8 @@ class ReprojectionRenderer:
                     uv[:, 1] = (uv[:, 1] - region_top) * region_scale_y
                     finite = np.isfinite(uv).all(axis=1)
                     uv, xyz_camera, colors = uv[finite], xyz_camera[finite], colors[finite]
-                    x = np.rint(uv[:, 0]).astype(np.int64, copy=False)
-                    y = np.rint(uv[:, 1]).astype(np.int64, copy=False)
+                    x = np.floor(uv[:, 0]).astype(np.int64, copy=False)
+                    y = np.floor(uv[:, 1]).astype(np.int64, copy=False)
                     inside = (x >= 0) & (x < width) & (y >= 0) & (y < height)
                     x, y = x[inside], y[inside]
                     depth = xyz_camera[inside, 2]
