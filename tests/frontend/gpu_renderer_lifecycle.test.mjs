@@ -1,4 +1,10 @@
 import assert from "node:assert/strict";
+import {
+    BufferGeometry,
+    Float32BufferAttribute,
+    Uint8BufferAttribute,
+} from "three/webgpu";
+import {uniform} from "three/tsl";
 
 import {
     ReprojectionGpuRenderer,
@@ -17,6 +23,53 @@ function rendererHarness() {
     renderer.nearClipFraction = 0;
     renderer.farClipFraction = 1;
     return renderer;
+}
+
+{
+    const renderer = rendererHarness();
+    renderer.pointSize = 3;
+    renderer.pointSizeNode = uniform(renderer.pointSize);
+    renderer.pointColorMode = "rgb";
+    renderer.pointColorModeNode = uniform(0);
+    renderer.pointDepthNearNode = uniform(0);
+    renderer.pointDepthFarNode = uniform(1);
+    const geometry = new BufferGeometry();
+    const positions = new Float32BufferAttribute([
+        0, 0, 1,
+        1, 0, 1,
+    ], 3);
+    const colors = new Uint8BufferAttribute([
+        255, 0, 0,
+        0, 255, 0,
+    ], 3, true);
+    geometry.setAttribute("position", positions);
+    geometry.setAttribute("color", colors);
+    geometry.computeBoundingSphere();
+
+    const points = renderer.createPointCloudSprite(geometry);
+    assert.equal(points.isSprite, true);
+    assert.equal(points.count, 2);
+    assert.equal(points.frustumCulled, false);
+    assert.equal(points.userData.pointGeometry, geometry);
+    assert.notEqual(points.userData.boundingSphere, geometry.boundingSphere);
+    assert.deepEqual(points.userData.boundingSphere, geometry.boundingSphere);
+    assert.equal(points.material.isPointsNodeMaterial, true);
+    const instancedPositions = points.material.positionNode.value;
+    assert.equal(instancedPositions.isInstancedBufferAttribute, true);
+    assert.equal(instancedPositions.array, positions.array);
+    assert.ok(points.material.colorNode);
+    assert.equal(points.material.sizeNode, renderer.pointSizeNode);
+
+    renderer.setPointSize(7);
+    assert.equal(renderer.pointSize, 7);
+    assert.equal(renderer.pointSizeNode.value, 7);
+
+    assert.equal(renderer.setPointColorMode("depth"), "depth");
+    assert.equal(renderer.pointColorModeNode.value, 1);
+    assert.equal(renderer.setPointColorMode("white"), "white");
+    assert.equal(renderer.pointColorModeNode.value, 2);
+    assert.equal(renderer.setPointColorMode("invalid"), "rgb");
+    assert.equal(renderer.pointColorModeNode.value, 0);
 }
 
 {

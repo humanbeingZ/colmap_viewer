@@ -1,10 +1,14 @@
 import * as THREE from "three/webgpu";
 import {PLYLoader} from "three/addons/loaders/PLYLoader.js";
 import {
+    instancedBufferAttribute,
+    mix,
+    modelViewMatrix,
     normalView,
     sRGBTransferEOTF,
     texture,
     uniform,
+    varying,
     vec3,
     vec4,
     vertexColor,
@@ -36,6 +40,11 @@ import {
 } from "./gpu_mesh_appearance.mjs";
 import {normalizeGeometryAttributesForGpu} from "./gpu_geometry.mjs";
 import {
+    instancedAttributeView,
+    needsVisiblePointDepthRange,
+    visiblePointDepthPercentiles,
+} from "./gpu_point_cloud.mjs";
+import {
     DEFAULT_GAUSSIAN_SPLAT_FILTER,
     gaussianSplatFilter,
 } from "./gpu_gaussian_filter.mjs";
@@ -43,6 +52,16 @@ import {parseMeshChunk} from "./gpu_mesh_chunk.mjs";
 
 const PLAYCANVAS_RENDERER_MODULE =
     "/static/vendor/playcanvas_gaussian_renderer.js";
+
+const POINT_COLOR_MODE_VALUES = Object.freeze({
+    rgb: 0,
+    depth: 1,
+    white: 2,
+});
+
+function normalizedPointColorMode(mode) {
+    return Object.hasOwn(POINT_COLOR_MODE_VALUES, mode) ? mode : "rgb";
+}
 
 function playcanvasRendererModuleUrl() {
     const version = globalThis.REPROJECTION_ASSET_VERSION;
@@ -58,8 +77,13 @@ function disposeObject(object) {
     const geometries = new Set();
     const materials = new Set();
     object.traverse(node => {
-        if (node.geometry) {
+        // Sprite geometry is an internal singleton shared by every Three.js
+        // Sprite. Disposing it with one point cloud breaks all later sprites.
+        if (node.geometry && !node.isSprite) {
             geometries.add(node.geometry);
+        }
+        if (node.userData.pointGeometry) {
+            geometries.add(node.userData.pointGeometry);
         }
         if (node.splatGeometry) {
             geometries.add(node.splatGeometry);
@@ -128,6 +152,11 @@ export class ReprojectionGpuRenderer {
         this.object = null;
         this.kind = null;
         this.pointSize = 1;
+        this.pointSizeNode = uniform(this.pointSize);
+        this.pointColorMode = "rgb";
+        this.pointColorModeNode = uniform(POINT_COLOR_MODE_VALUES.rgb);
+        this.pointDepthNearNode = uniform(0);
+        this.pointDepthFarNode = uniform(1);
         this.meshShading = DEFAULT_MESH_SHADING;
         this.meshColor = DEFAULT_MESH_COLOR;
         this.meshBrightness = DEFAULT_MESH_BRIGHTNESS;
@@ -291,6 +320,71 @@ export class ReprojectionGpuRenderer {
         // before the renderer performs its final linear-to-sRGB output pass.
         material.fragmentNode = vec4(sRGBTransferEOTF(displaySrgb), 1);
         return material;
+    }
+
+    createPointCloudSprite(geometry) {
+        const position = geometry.getAttribute("position");
+        const color = geometry.getAttribute("color");
+        const instancedPosition = instancedAttributeView(position);
+        const positionNode = instancedBufferAttribute(instancedPosition);
+        const sourceColor = color
+            // PLYLoader has already converted stored sRGB colors to Three's
+            // linear working space. Preserve the attribute's normalized flag
+            // while reading one color per sprite instance.
+            ? instancedBufferAttribute(instancedAttributeView(color)).rgb
+            : uniform(new THREE.Color(0xb0b0b0));
+
+        // Match the server renderer's four-stop display-sRGB depth palette.
+        // Visible-depth percentiles are supplied by configureCamera() only in
+        // depth mode, keeping RGB and white navigation free of sampling work.
+        const pointDepth = varying(
+            modelViewMatrix.mul(vec4(positionNode, 1)).z.negate()
+        );
+        const depthFraction = pointDepth.sub(this.pointDepthNearNode).div(
+            this.pointDepthFarNode.sub(this.pointDepthNearNode).max(1e-6)
+        ).clamp(0, 1).mul(3);
+        let depthSrgb = mix(
+            vec3(1, 40 / 255, 40 / 255),
+            vec3(1, 220 / 255, 30 / 255),
+            depthFraction.clamp(0, 1)
+        );
+        depthSrgb = mix(
+            depthSrgb,
+            vec3(20 / 255, 220 / 255, 220 / 255),
+            depthFraction.sub(1).clamp(0, 1)
+        );
+        depthSrgb = mix(
+            depthSrgb,
+            vec3(40 / 255, 80 / 255, 1),
+            depthFraction.sub(2).clamp(0, 1)
+        );
+        const depthColor = sRGBTransferEOTF(depthSrgb);
+        const selectedColor = this.pointColorModeNode.equal(
+            POINT_COLOR_MODE_VALUES.white
+        ).select(
+            vec3(1),
+            this.pointColorModeNode.equal(POINT_COLOR_MODE_VALUES.depth)
+                .select(depthColor, sourceColor)
+        );
+        const materialOptions = {
+            color: 0xffffff,
+            colorNode: selectedColor,
+            positionNode,
+            sizeNode: this.pointSizeNode,
+            sizeAttenuation: false,
+        };
+        const sprite = new THREE.Sprite(
+            new THREE.PointsNodeMaterial(materialOptions)
+        );
+        sprite.count = position.count;
+        // Sprite's built-in frustum test only represents one sprite at the
+        // origin, not the entire instanced cloud. Camera projection already
+        // clips instances efficiently on the GPU.
+        sprite.frustumCulled = false;
+        sprite.userData.pointGeometry = geometry;
+        sprite.userData.boundingSphere = geometry.boundingSphere?.clone();
+        sprite.userData.depthColorRanges = new Map();
+        return sprite;
     }
 
     static async inspectFile(file) {
@@ -544,6 +638,7 @@ export class ReprojectionGpuRenderer {
         let object;
         geometry = new PLYLoader().parse(bytes);
         normalizeGeometryAttributesForGpu(geometry);
+        geometry.computeBoundingSphere();
         if (kind === "triangle mesh") {
                 // Remove any PLY vertex normals so normalView is computed from
                 // position derivatives, giving true per-face flat shading.
@@ -553,17 +648,8 @@ export class ReprojectionGpuRenderer {
                     this.createMeshMaterial(Boolean(geometry.getAttribute("color")))
                 );
         } else {
-            object = new THREE.Points(
-                geometry,
-                new THREE.PointsMaterial({
-                    color: geometry.getAttribute("color") ? 0xffffff : 0xb0b0b0,
-                    vertexColors: Boolean(geometry.getAttribute("color")),
-                    size: this.pointSize,
-                    sizeAttenuation: false,
-                })
-            );
+            object = this.createPointCloudSprite(geometry);
         }
-        geometry.computeBoundingSphere();
         if (!isCurrent()) {
             disposeObject(object);
             return null;
@@ -729,7 +815,8 @@ export class ReprojectionGpuRenderer {
             );
         }
         const object = entry?.object;
-        const sourceGeometry = object?.splatGeometry || object?.geometry;
+        const sourceGeometry = object?.userData?.pointGeometry
+            || object?.splatGeometry || object?.geometry;
         const sphere = object?.userData?.boundingSphere
             || sourceGeometry?.boundingSphere;
         if (!sphere) {
@@ -793,6 +880,35 @@ export class ReprojectionGpuRenderer {
         const frustum = projectionFrustum(
             image, projectionRange.near, projectionRange.far, region
         );
+        if (needsVisiblePointDepthRange(this.kind, this.pointColorMode)) {
+            const pointGeometry = this.object?.userData?.pointGeometry;
+            const rangeCache = this.object?.userData?.depthColorRanges;
+            const rangeKey = JSON.stringify([
+                ...this.camera.matrixWorldInverse.elements,
+                frustum.left, frustum.right, frustum.top, frustum.bottom,
+                clipped.near, clipped.far,
+            ]);
+            let depthColorRange = rangeCache?.get(rangeKey);
+            if (!depthColorRange) {
+                depthColorRange = visiblePointDepthPercentiles(
+                    pointGeometry?.getAttribute("position"),
+                    this.camera.matrixWorldInverse,
+                    frustum,
+                    clipped
+                ) || clipped;
+                if (rangeCache) {
+                    rangeCache.set(rangeKey, depthColorRange);
+                    if (rangeCache.size > 32) {
+                        rangeCache.delete(rangeCache.keys().next().value);
+                    }
+                }
+            }
+            this.pointDepthNearNode.value = depthColorRange.near;
+            this.pointDepthFarNode.value = depthColorRange.far;
+        } else {
+            this.pointDepthNearNode.value = clipped.near;
+            this.pointDepthFarNode.value = clipped.far;
+        }
         this.camera.near = frustum.near;
         this.camera.far = frustum.far;
         this.camera.projectionMatrix.makePerspective(
@@ -1066,12 +1182,15 @@ export class ReprojectionGpuRenderer {
 
     setPointSize(size) {
         this.pointSize = Number(size);
-        for (const [, entry] of this.geometries) {
-            if (entry.kind === "point cloud" && entry.object?.material) {
-                entry.object.material.size = this.pointSize;
-                entry.object.material.needsUpdate = true;
-            }
-        }
+        this.pointSizeNode.value = this.pointSize;
+    }
+
+    setPointColorMode(mode) {
+        this.pointColorMode = normalizedPointColorMode(mode);
+        this.pointColorModeNode.value = POINT_COLOR_MODE_VALUES[
+            this.pointColorMode
+        ];
+        return this.pointColorMode;
     }
 
     setClippingRange(nearFraction, farFraction) {

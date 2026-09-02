@@ -238,6 +238,7 @@ const reprojectionState = {
 
 let reprojectionGpuRenderer = null;
 const clippingRenderScheduler = new ReprojectionLatestTaskScheduler();
+const rightServerFrameRequests = new ReprojectionLatestRequestGuard();
 let lastClippingWheelTime = -Infinity;
 let lastClippingWheelPlane = null;
 
@@ -250,6 +251,7 @@ function getReprojectionGpuRenderer() {
             reprojectionGpuCanvas, reprojectionGaussianCanvas
         );
         reprojectionGpuRenderer.setPointSize(reprojectionPointSize.value);
+        reprojectionGpuRenderer.setPointColorMode(reprojectionColor.value);
         reprojectionGpuRenderer.setClippingRange(
             reprojectionState.nearClipFraction,
             reprojectionState.farClipFraction
@@ -533,6 +535,7 @@ function rightGeometryFrameCacheKey(source, width, height, renderedView) {
         reprojectionMeshColor.value,
         reprojectionMeshBrightness.value,
         reprojectionPointSize.value,
+        reprojectionColor.value,
         reprojectionGsplatAa.checked,
         reprojectionGsplatKernel.value,
     ]);
@@ -693,6 +696,7 @@ function renderReprojectionRightPaneServer(generation) {
         return;
     }
     const renderedView = currentReprojectionView();
+    const request = rightServerFrameRequests.begin();
     const urls = reprojectionUrls(
         image, reprojectionIdentity.id, currentPreviewMaxSize(), renderedView,
         null
@@ -700,6 +704,7 @@ function renderReprojectionRightPaneServer(generation) {
     const preload = new Image();
     preload.onload = () => {
         if (generation !== reprojectionState.generation
+                || !rightServerFrameRequests.isCurrent(request)
                 || !paneSources.isColmap(reprojectionState.rightSource)) {
             return;
         }
@@ -2697,11 +2702,25 @@ function stepReprojectionPointSize(direction) {
     );
 }
 
+function applyReprojectionPointColor() {
+    reprojectionGpuRenderer?.setPointColorMode(reprojectionColor.value);
+    if (reprojectionState.renderMode === "gpu") {
+        renderReprojectionGpuFrame(reprojectionState.generation);
+        return;
+    }
+    loadReprojectionPointLayer();
+    if (paneSources.isGpuGeometry(reprojectionState.rightSource)) {
+        renderReprojectionRightPane(reprojectionState.generation);
+    } else if (paneSources.isColmap(reprojectionState.rightSource)) {
+        renderReprojectionRightPaneServer(reprojectionState.generation);
+    }
+}
+
 viewerModeSelect.addEventListener("change", () => setViewerMode(viewerModeSelect.value));
 reprojectionImageSelect.addEventListener("change", () => {
     loadReprojectionFrame(reprojectionImageSelect.selectedIndex);
 });
-reprojectionColor.addEventListener("change", loadReprojectionPointLayer);
+reprojectionColor.addEventListener("change", applyReprojectionPointColor);
 reprojectionPointSize.addEventListener("change", () => {
     setReprojectionPointSize(reprojectionPointSize.value);
 });

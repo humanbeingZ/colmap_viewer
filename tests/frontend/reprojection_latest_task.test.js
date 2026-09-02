@@ -2,6 +2,15 @@ const assert = require("assert");
 const LatestTaskScheduler = require(
     "../../static/js/reprojection/latest_task.js"
 );
+const {LatestRequestGuard} = LatestTaskScheduler;
+
+{
+    const guard = new LatestRequestGuard();
+    const obsolete = guard.begin();
+    const latest = guard.begin();
+    assert.strictEqual(guard.isCurrent(obsolete), false);
+    assert.strictEqual(guard.isCurrent(latest), true);
+}
 
 (async () => {
     const scheduled = [];

@@ -38,8 +38,25 @@
         }
     }
 
+    class LatestRequestGuard {
+        constructor() {
+            this.latest = 0;
+        }
+
+        begin() {
+            this.latest += 1;
+            return this.latest;
+        }
+
+        isCurrent(request) {
+            return request === this.latest;
+        }
+    }
+
     globalScope.ReprojectionLatestTaskScheduler = LatestTaskScheduler;
+    globalScope.ReprojectionLatestRequestGuard = LatestRequestGuard;
     if (typeof module !== "undefined" && module.exports) {
         module.exports = LatestTaskScheduler;
+        module.exports.LatestRequestGuard = LatestRequestGuard;
     }
 })(typeof globalThis !== "undefined" ? globalThis : this);
