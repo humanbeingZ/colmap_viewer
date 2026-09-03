@@ -32,6 +32,13 @@ assert.strictEqual(gpuCanvas.sourceTransition(true, true), "attach");
 assert.strictEqual(gpuCanvas.sourceTransition(true, false), "attach");
 assert.strictEqual(gpuCanvas.sourceTransition(false, true), "keep");
 assert.strictEqual(gpuCanvas.sourceTransition(false, false), "disable");
+assert.strictEqual(gpuCanvas.leftFrameReusable(true, false), true);
+assert.strictEqual(
+    gpuCanvas.leftFrameReusable(true, true),
+    false,
+    "a comparison frame must be redrawn before an independent right pane clips it"
+);
+assert.strictEqual(gpuCanvas.leftFrameReusable(false, false), false);
 
 const rightPresentationCases = [
     {

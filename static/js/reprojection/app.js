@@ -469,7 +469,10 @@ function refreshReprojectionPanes() {
         }
         const rightOnlyGpuCapture = rightSourcePending
             && rightIsGpu
-            && sourceAlreadyVisible
+            && ReprojectionGpuCanvas.leftFrameReusable(
+                sourceAlreadyVisible,
+                reprojectionInputLayer.classList.contains("gpu-composited")
+            )
             && ((reprojectionLayout.value === "side"
                     && rightSource === leftSource)
                 || renderer.getGeometryEngine(leftSource)

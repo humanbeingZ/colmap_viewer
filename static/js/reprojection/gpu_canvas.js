@@ -19,6 +19,10 @@
         return currentCanvasActive ? "keep" : "disable";
     }
 
+    function leftFrameReusable(sourceAlreadyVisible, frameIsComposited) {
+        return sourceAlreadyVisible && !frameIsComposited;
+    }
+
     function rightPresentationMode({
         selectedSource,
         renderedSource,
@@ -49,6 +53,7 @@
 
     const api = {
         canvasForEngine,
+        leftFrameReusable,
         needsLiveOutgoingCanvas,
         rightPresentationMode,
         sourceTransition,
