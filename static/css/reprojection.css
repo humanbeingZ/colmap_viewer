@@ -248,7 +248,9 @@
     top: calc(100% + 3px);
     left: 0;
     min-width: 100%;
-    max-width: 240px;
+    box-sizing: border-box;
+    width: 250px;
+    max-width: calc(100vw - 40px);
     padding: 4px;
     border: 1px solid #c8c8c8;
     border-radius: 4px;
@@ -256,14 +258,20 @@
     box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
 }
 
+#reprojection-right-source-picker .reprojection-source-menu {
+    right: 0;
+    left: auto;
+}
+
 .reprojection-source-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 30px 30px;
+    grid-template-columns: minmax(0, 1fr) 30px 30px 30px;
     align-items: center;
 }
 
 .reprojection-source-choice,
 .reprojection-source-edit,
+.reprojection-source-info,
 .reprojection-source-eye {
     border: 0;
     background: transparent;
@@ -297,6 +305,55 @@
     padding: 5px;
     color: #555;
     font-size: 0.9rem;
+}
+
+.reprojection-source-info {
+    padding: 5px;
+    color: #555;
+    font-size: 0.95rem;
+}
+
+.reprojection-source-info-panel {
+    grid-column: 1 / -1;
+    margin: 2px 4px 6px;
+    padding: 7px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #f7f7f7;
+}
+
+.reprojection-source-info-field {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: start;
+    margin-bottom: 5px;
+    color: #555;
+    font-size: 0.72rem;
+}
+
+.reprojection-source-info-field code {
+    overflow-wrap: anywhere;
+    color: #333;
+    font: 0.72rem/1.35 monospace;
+    user-select: text;
+}
+
+.reprojection-source-info-field code.unavailable {
+    color: #999;
+    font-style: italic;
+}
+
+.reprojection-source-copy {
+    padding: 2px 5px;
+    font-size: 0.68rem;
+}
+
+.reprojection-source-copy-status {
+    min-height: 1em;
+    color: #1769aa;
+    font-size: 0.68rem;
+    text-align: right;
 }
 
 .reprojection-source-label-input {

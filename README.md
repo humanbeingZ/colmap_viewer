@@ -144,6 +144,10 @@ any source, including COLMAP points and the camera image. Switching sources with
 the menu or the `t`/`y` shortcuts updates both selected labels in the upper
 corners of their panes. The Comparison controls show labels continuously by
 default and can instead hide them or fade them after two seconds.
+The left and right source menus provide rename, cycling-visibility, and info
+actions. The info action shows the source label, filename, and available path,
+with a separate copy button for each value. Browser-selected files do not
+expose their filesystem path, so only their filename is available.
 
 COLMAP distortion cannot be represented by a standard Three.js perspective
 camera. For distorted camera models, the viewer therefore uses its calibrated

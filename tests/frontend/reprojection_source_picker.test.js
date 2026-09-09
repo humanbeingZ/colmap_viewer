@@ -21,6 +21,11 @@ picker.cycleIndex = paneSources.cycleIndex;
 picker.onSelect = () => {};
 let renamed = null;
 picker.onRename = (value, label) => { renamed = {value, label}; };
+picker.onInfo = value => ({
+    label: `${value} label`,
+    filename: `${value}.ply`,
+    path: `/data/${value}.ply`,
+});
 
 assert.deepStrictEqual(picker.visibleValues(), ["image", "mesh"]);
 assert.strictEqual(picker.nextValue(1), "mesh");
@@ -42,5 +47,16 @@ assert.deepStrictEqual(picker.visibleValues(), ["image", "mesh"]);
 assert.strictEqual(picker.renameValue("mesh", "  baseline  "), true);
 assert.deepStrictEqual(renamed, {value: "mesh", label: "baseline"});
 assert.strictEqual(picker.renameValue("mesh", "   "), false);
+assert.deepStrictEqual(picker.infoForValue("mesh", "fallback"), {
+    label: "mesh label",
+    filename: "mesh.ply",
+    path: "/data/mesh.ply",
+});
+picker.onInfo = null;
+assert.deepStrictEqual(picker.infoForValue("mesh", "fallback"), {
+    label: "fallback",
+    filename: "",
+    path: "",
+});
 
 console.log("reprojection source picker tests passed");

@@ -328,6 +328,27 @@ function getReprojectionGpuRenderer() {
     return reprojectionGpuRenderer;
 }
 
+function reprojectionSourceInfo(source) {
+    const label = reprojectionSourceLabel(source);
+    if (paneSources.isImage(source)) {
+        return {
+            label,
+            filename: reprojectionState.images[
+                reprojectionState.currentIndex
+            ]?.name || "",
+            path: "",
+        };
+    }
+    const geometry = reprojectionState.loadedGeometries.find(
+        loaded => loaded.gpuKey === source
+    );
+    return {
+        label,
+        filename: geometry?.filename || "",
+        path: geometry?.path || "",
+    };
+}
+
 const paneSourcePickers = {
     left: new ReprojectionSourcePicker({
         select: reprojectionLeftSource,
@@ -335,6 +356,7 @@ const paneSourcePickers = {
         cycleIndex: paneSources.cycleIndex,
         onSelect: () => applyPaneSource("left"),
         onRename: renameReprojectionSource,
+        onInfo: reprojectionSourceInfo,
     }),
     right: new ReprojectionSourcePicker({
         select: reprojectionRightSource,
@@ -342,6 +364,7 @@ const paneSourcePickers = {
         cycleIndex: paneSources.cycleIndex,
         onSelect: () => applyPaneSource("right"),
         onRename: renameReprojectionSource,
+        onInfo: reprojectionSourceInfo,
     }),
 };
 
@@ -2190,7 +2213,8 @@ async function loadConfiguredReprojectionGeometryNow(
         configuredGeometry.name,
         configuredBrowserGeometryLoader(configuredGeometry, image),
         sourceId,
-        "configured"
+        "configured",
+        configuredGeometry.path || null
     );
     return installed
         ? configuredGeometryLoadResult.loaded
@@ -2260,6 +2284,7 @@ async function loadLocalReprojectionGeometry() {
             if (!isCurrent()) {
                 return configuredGeometryLoadResult.failed;
             }
+            configuredGeometry.path = path;
             reprojectionState.configuredGeometry = configuredGeometry;
             if (!reprojectionState.images.length) {
                 setReprojectionStatus(
@@ -2283,7 +2308,7 @@ async function loadLocalReprojectionGeometry() {
 }
 
 async function installBrowserGeometry(
-    name, loadGeometry, sourceId = null, owner = "direct"
+    name, loadGeometry, sourceId = null, owner = "direct", sourcePath = null
 ) {
     const renderer = getReprojectionGpuRenderer();
 
@@ -2323,6 +2348,9 @@ async function installBrowserGeometry(
             loaded => loaded.sourceId === sourceId
         );
         if (duplicate) {
+            if (sourcePath) {
+                duplicate.path = sourcePath;
+            }
             await renderer.disposeGeometry(geometry.key);
             renderer.activateGeometry(duplicate.gpuKey);
             return true;
@@ -2351,6 +2379,8 @@ async function installBrowserGeometry(
                 sourceId,
                 name: representationName,
                 label,
+                filename: name,
+                path: sourcePath,
                 kind: representation.kind,
                 count: representation.count,
                 hiddenByDefault: Boolean(representation.hiddenByDefault),

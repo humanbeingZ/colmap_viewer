@@ -1,13 +1,43 @@
 (function (globalScope) {
     "use strict";
 
+    async function copyText(text) {
+        if (globalScope.navigator?.clipboard?.writeText) {
+            await globalScope.navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = globalScope.document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        globalScope.document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            if (!globalScope.document.execCommand("copy")) {
+                throw new Error("Copy command was rejected");
+            }
+        } finally {
+            textarea.remove();
+        }
+    }
+
     class ReprojectionSourcePicker {
-        constructor({select, picker, cycleIndex, onSelect, onRename = null}) {
+        constructor({
+            select,
+            picker,
+            cycleIndex,
+            onSelect,
+            onRename = null,
+            onInfo = null,
+            copyText: copyTextImpl = copyText,
+        }) {
             this.select = select;
             this.picker = picker;
             this.cycleIndex = cycleIndex;
             this.onSelect = onSelect;
             this.onRename = onRename;
+            this.onInfo = onInfo;
+            this.copyText = copyTextImpl;
             this.hiddenSources = new Set();
             this.knownSources = new Set();
             this.trigger = picker.querySelector(".reprojection-source-trigger");
@@ -30,6 +60,16 @@
         close() {
             this.menu.hidden = true;
             this.trigger.setAttribute("aria-expanded", "false");
+            for (const panel of this.menu.querySelectorAll(
+                ".reprojection-source-info-panel"
+            )) {
+                panel.hidden = true;
+            }
+            for (const button of this.menu.querySelectorAll(
+                ".reprojection-source-info"
+            )) {
+                button.setAttribute("aria-expanded", "false");
+            }
         }
 
         toggle() {
@@ -89,6 +129,62 @@
             }
             this.onRename(value, normalized);
             return true;
+        }
+
+        infoForValue(value, fallbackLabel) {
+            const info = this.onInfo?.(value) || {};
+            return {
+                label: String(info.label || fallbackLabel || ""),
+                filename: String(info.filename || ""),
+                path: String(info.path || ""),
+            };
+        }
+
+        buildInfoPanel(option) {
+            const panel = document.createElement("div");
+            panel.className = "reprojection-source-info-panel";
+            panel.hidden = true;
+            const status = document.createElement("div");
+            status.className = "reprojection-source-copy-status";
+            status.setAttribute("role", "status");
+            const info = this.infoForValue(option.value, option.textContent);
+            for (const [key, fieldLabel] of [
+                ["label", "Label"],
+                ["filename", "Filename"],
+                ["path", "Path"],
+            ]) {
+                const value = info[key];
+                const row = document.createElement("div");
+                row.className = "reprojection-source-info-field";
+                const name = document.createElement("span");
+                name.textContent = fieldLabel;
+                const content = document.createElement("code");
+                content.textContent = value || "Unavailable";
+                content.classList.toggle("unavailable", !value);
+                const copy = document.createElement("button");
+                copy.type = "button";
+                copy.className = "reprojection-source-copy";
+                copy.textContent = "Copy";
+                copy.disabled = !value;
+                copy.title = value
+                    ? `Copy ${fieldLabel.toLowerCase()}`
+                    : `${fieldLabel} unavailable`;
+                copy.setAttribute("aria-label", copy.title);
+                copy.addEventListener("click", async event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    try {
+                        await this.copyText(value);
+                        status.textContent = `${fieldLabel} copied`;
+                    } catch (_) {
+                        status.textContent = `Unable to copy ${fieldLabel.toLowerCase()}`;
+                    }
+                });
+                row.append(name, content, copy);
+                panel.appendChild(row);
+            }
+            panel.appendChild(status);
+            return panel;
         }
 
         registerSources(optionValues, defaultHiddenSources = new Set()) {
@@ -194,6 +290,36 @@
                 });
                 labelInput.addEventListener("blur", () => finishRename(true));
 
+                const info = document.createElement("button");
+                info.type = "button";
+                info.className = "reprojection-source-info";
+                info.textContent = "ⓘ";
+                info.title = `Show information for ${option.textContent}`;
+                info.setAttribute("aria-label", info.title);
+                info.setAttribute("aria-expanded", "false");
+                const infoPanel = this.buildInfoPanel(option);
+                info.addEventListener("click", event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const opening = infoPanel.hidden;
+                    for (const panel of this.menu.querySelectorAll(
+                        ".reprojection-source-info-panel"
+                    )) {
+                        panel.hidden = true;
+                    }
+                    for (const button of this.menu.querySelectorAll(
+                        ".reprojection-source-info"
+                    )) {
+                        button.setAttribute("aria-expanded", "false");
+                    }
+                    if (opening) {
+                        const currentPanel = this.buildInfoPanel(option);
+                        infoPanel.replaceChildren(...currentPanel.children);
+                    }
+                    infoPanel.hidden = !opening;
+                    info.setAttribute("aria-expanded", String(opening));
+                });
+
                 const eye = document.createElement("button");
                 eye.type = "button";
                 eye.className = "reprojection-source-eye";
@@ -209,7 +335,7 @@
                     event.stopPropagation();
                     this.toggleVisibility(option, hidden);
                 });
-                row.append(choice, labelInput, edit, eye);
+                row.append(choice, labelInput, edit, info, eye, infoPanel);
                 this.menu.appendChild(row);
             }
         }
