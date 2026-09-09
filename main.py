@@ -1,6 +1,7 @@
 """Command-line launcher for the COLMAP viewer."""
 
 import argparse
+import os
 
 import uvicorn
 
@@ -9,11 +10,25 @@ from viewer.colmap_service import ColmapService
 from viewer.geometry.ply import PlyGeometryLoader
 
 
+def resolve_directory_path(path: str) -> str:
+    resolved = os.path.realpath(os.path.expanduser(path))
+    if not os.path.isdir(resolved):
+        raise ValueError(f"Directory does not exist: {resolved}")
+    return resolved
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--image_base_path", type=str, required=True)
     parser.add_argument("-c", "--colmap_project_path", type=str, default=None)
     parser.add_argument("-d", "--database_path", type=str, default=None)
+    parser.add_argument(
+        "-m",
+        "--mask_directory",
+        type=str,
+        default=None,
+        help="image-mask directory mirroring the input image hierarchy",
+    )
     parser.add_argument(
         "-g",
         "--geometry",
@@ -36,6 +51,11 @@ def parse_args() -> argparse.Namespace:
             ]
         except ValueError as error:
             parser.error(str(error))
+    if args.mask_directory:
+        try:
+            args.mask_directory = resolve_directory_path(args.mask_directory)
+        except ValueError as error:
+            parser.error(str(error))
     return args
 
 
@@ -51,6 +71,7 @@ def main() -> None:
             project_path=args.colmap_project_path,
             db_path=args.database_path,
             geometry_paths=args.geometry,
+            mask_directory=args.mask_directory,
         )
     )
     uvicorn.run(app, host="0.0.0.0", port=args.port)

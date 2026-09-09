@@ -95,7 +95,8 @@
     opacity: 0.55;
 }
 
-.reprojection-gsplat-field.reprojection-field {
+.reprojection-gsplat-field.reprojection-field,
+.reprojection-mask-field.reprojection-field {
     display: flex;
     flex-direction: row;
     flex-wrap: nowrap;
@@ -104,12 +105,14 @@
     gap: 12px;
 }
 
-.reprojection-gsplat-field[hidden] {
+.reprojection-gsplat-field[hidden],
+.reprojection-mask-field[hidden] {
     display: none;
 }
 
 .reprojection-gsplat-field > .reprojection-checkbox,
-.reprojection-gsplat-field > .reprojection-gsplat-kernel {
+.reprojection-gsplat-field > .reprojection-gsplat-kernel,
+.reprojection-mask-field > .reprojection-checkbox {
     display: inline-flex;
     align-items: center;
     gap: 6px;

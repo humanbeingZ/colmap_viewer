@@ -1,9 +1,13 @@
+import io
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from PIL import Image
 
 from viewer.colmap_service import ColmapService
 from viewer.reprojection.core import GeometryData
@@ -107,6 +111,7 @@ class ReprojectionMetadataTest(unittest.TestCase):
             "name": "frame.png",
             "width": 1920,
             "height": 1080,
+            "has_mask": False,
             "camera": {
                 "model": "PINHOLE",
                 "params": [1200.0, 1190.0, 960.0, 540.0],
@@ -117,6 +122,57 @@ class ReprojectionMetadataTest(unittest.TestCase):
                 [0.0, 0.0, 1.0, 4.0],
             ],
         }])
+
+    def test_input_mask_uses_matching_relative_stem(self):
+        with (
+            tempfile.TemporaryDirectory() as image_directory,
+            tempfile.TemporaryDirectory() as mask_directory,
+        ):
+            image_root = Path(image_directory)
+            mask_root = Path(mask_directory)
+            (image_root / "cam0").mkdir()
+            (mask_root / "cam0").mkdir()
+            Image.new("RGB", (640, 320), "white").save(
+                image_root / "cam0/frame.jpg"
+            )
+            mask_pixels = np.zeros((320, 640), dtype=np.uint8)
+            mask_pixels[:, :320] = 255
+            Image.fromarray(mask_pixels, "L").save(
+                mask_root / "cam0/frame.png"
+            )
+            service = ColmapService(
+                image_directory, mask_directory=mask_directory
+            )
+            service.reconstruction = SimpleNamespace(
+                images={1: SimpleNamespace(name="cam0/frame.jpg", camera_id=2)},
+                cameras={2: SimpleNamespace(width=640, height=320)},
+                points3D={},
+            )
+
+            unmasked_encoded = service.get_reprojection_input_image(
+                1, max_size=640, masked=False
+            )
+            masked_encoded = service.get_reprojection_input_image(
+                1, max_size=640, masked=True
+            )
+            inverted_encoded = service.get_reprojection_input_image(
+                1, max_size=640, masked=True, invert_mask=True
+            )
+            unmasked_pixels = np.asarray(
+                Image.open(io.BytesIO(unmasked_encoded))
+            )
+            masked_pixels = np.asarray(
+                Image.open(io.BytesIO(masked_encoded))
+            )
+            inverted_pixels = np.asarray(
+                Image.open(io.BytesIO(inverted_encoded))
+            )
+
+        self.assertGreater(unmasked_pixels.mean(), 240)
+        self.assertGreater(masked_pixels[:, :280].mean(), 240)
+        self.assertLess(masked_pixels[:, 360:].mean(), 5)
+        self.assertLess(inverted_pixels[:, :280].mean(), 5)
+        self.assertGreater(inverted_pixels[:, 360:].mean(), 240)
 
     def test_configured_geometry_uses_a_token_without_exposing_its_path(self):
         with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:

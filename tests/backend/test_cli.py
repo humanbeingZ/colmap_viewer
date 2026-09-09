@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,17 @@ class CommandLineTest(unittest.TestCase):
             "/resolved/second.ply",
             "/resolved/third.ply",
         ])
+
+    def test_mask_option_accepts_an_existing_directory(self):
+        with tempfile.TemporaryDirectory() as mask_directory:
+            arguments = [
+                "main.py", "-i", "/images", "-c", "/sparse",
+                "-m", mask_directory,
+            ]
+            with patch.object(sys, "argv", arguments):
+                parsed = parse_args()
+
+        self.assertEqual(parsed.mask_directory, mask_directory)
 
 
 if __name__ == "__main__":

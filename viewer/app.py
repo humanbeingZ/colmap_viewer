@@ -261,6 +261,7 @@ async def get_capabilities(request: Request, stream: str = "default"):
         "dataset_namespace": colmap_service.cache_namespace,
         "max_reprojection_size": colmap_service.MAX_REPROJECTION_SIZE,
         "max_input_size": colmap_service.MAX_INPUT_SIZE,
+        "image_masks": colmap_service.has_image_masks(),
         "geometry": colmap_service.get_geometry_status(stream),
         "configured_geometry": (
             configured_geometries[0] if configured_geometries else None
@@ -476,10 +477,16 @@ def get_reprojection_input(
     image_id: int,
     max_size: int = 1600,
     stream: str = "default",
+    masked: bool = False,
+    invert_mask: bool = False,
 ):
     try:
         image = colmap_service.get_reprojection_input_image(
-            image_id, max_size, request_stream=stream
+            image_id,
+            max_size,
+            request_stream=stream,
+            masked=masked,
+            invert_mask=invert_mask,
         )
     except InputSuperseded:
         return Response(status_code=204)

@@ -85,10 +85,15 @@ class ColmapService:
         db_path: Optional[str] = None,
         geometry_path: Optional[str] = None,
         geometry_paths: Optional[List[str]] = None,
+        mask_directory: Optional[str] = None,
     ):
         self.image_base_path = image_path
         self.project_path = project_path
         self.db_path = db_path
+        self.mask_directory = (
+            os.path.realpath(os.path.expanduser(mask_directory))
+            if mask_directory else None
+        )
         initial_geometry_paths = list(geometry_paths or [])
         if geometry_path and not initial_geometry_paths:
             initial_geometry_paths.append(geometry_path)
@@ -103,7 +108,7 @@ class ColmapService:
         self._configured_geometry_lock = threading.RLock()
         namespace_source = "\0".join(
             os.path.abspath(path) if path else ""
-            for path in (image_path, project_path, db_path)
+            for path in (image_path, project_path, db_path, self.mask_directory)
         )
         self.cache_namespace = hashlib.sha256(
             namespace_source.encode("utf-8")
@@ -543,6 +548,7 @@ class ColmapService:
                 "name": image.name,
                 "width": int(camera.width),
                 "height": int(camera.height),
+                "has_mask": self._mask_image_path(image.name) is not None,
                 "camera": {
                     "model": camera.model_name,
                     "params": np.asarray(camera.params, dtype=np.float64).tolist(),
@@ -608,6 +614,37 @@ class ColmapService:
             raise FileNotFoundError(image_path)
         return image_path
 
+    def has_image_masks(self) -> bool:
+        return bool(
+            self.mask_directory and os.path.isdir(self.mask_directory)
+        )
+
+    def _mask_image_path(self, image_name: str) -> Optional[str]:
+        """Resolve a mask with the image's relative path and matching stem."""
+        if not self.has_image_masks():
+            return None
+        relative = os.path.normpath(image_name)
+        if os.path.isabs(relative) or relative == ".." or relative.startswith(
+            f"..{os.sep}"
+        ):
+            return None
+        stem, _ = os.path.splitext(relative)
+        candidates = [
+            relative,
+            *(f"{stem}{suffix}" for suffix in (
+                ".png", ".jpg", ".jpeg", ".tif", ".tiff"
+            )),
+        ]
+        mask_root = os.path.abspath(self.mask_directory)
+        for candidate in dict.fromkeys(candidates):
+            mask_path = os.path.abspath(os.path.join(mask_root, candidate))
+            if (
+                os.path.commonpath([mask_root, mask_path]) == mask_root
+                and os.path.isfile(mask_path)
+            ):
+                return mask_path
+        return None
+
     @staticmethod
     def _encode_jpeg(array: np.ndarray, high_quality: bool = False) -> bytes:
         output = io.BytesIO()
@@ -643,10 +680,18 @@ class ColmapService:
         image_id: int,
         max_size: int = 1600,
         request_stream: str = "default",
+        masked: bool = False,
+        invert_mask: bool = False,
     ) -> bytes:
         """Decode stored pixels without applying EXIF orientation."""
         self.touch_geometry_stream(request_stream)
-        cache_key = ("input-jpeg", image_id, max_size)
+        cache_key = (
+            "input-jpeg",
+            image_id,
+            max_size,
+            bool(masked),
+            bool(invert_mask),
+        )
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
@@ -683,6 +728,29 @@ class ColmapService:
                 if source.size != (width, height):
                     source = source.resize((width, height), Image.Resampling.BILINEAR)
                 pixels = np.asarray(source.convert("RGB"))
+            if masked:
+                mask_path = self._mask_image_path(image.name)
+                if mask_path is None:
+                    raise ValueError(f"No mask is available for {image.name}")
+                with Image.open(mask_path) as mask_source:
+                    if mask_source.size != native_size:
+                        raise ValueError(
+                            f"Mask raster is {mask_source.size}, but image expects "
+                            f"{native_size}"
+                        )
+                    mask = mask_source.convert("L")
+                    if mask.size != (width, height):
+                        mask = mask.resize(
+                            (width, height), Image.Resampling.NEAREST
+                        )
+                    mask_pixels = np.asarray(mask, dtype=np.uint16)
+                if invert_mask:
+                    mask_pixels = 255 - mask_pixels
+                pixels = (
+                    np.asarray(pixels, dtype=np.uint16)
+                    * mask_pixels[:, :, None]
+                    // 255
+                ).astype(np.uint8)
             self._check_input_request(request_stream, request_id)
             return self._cache_put(
                 cache_key,

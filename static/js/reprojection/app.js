@@ -88,6 +88,11 @@ const reprojectionBackgroundBottom = document.getElementById(
     "reprojection-background-bottom"
 );
 const reprojectionFlip = document.getElementById("reprojection-flip");
+const reprojectionMaskField = document.getElementById("reprojection-mask-field");
+const reprojectionMask = document.getElementById("reprojection-mask");
+const reprojectionInvertMask = document.getElementById(
+    "reprojection-invert-mask"
+);
 const reprojectionResetView = document.getElementById("reprojection-reset-view");
 const reprojectionResetDivider = document.getElementById("reprojection-reset-divider");
 const reprojectionResetClipping = document.getElementById(
@@ -264,6 +269,7 @@ const reprojectionState = {
     maxSize: 1600,
     maxRenderSize: null,
     maxInputSize: 8192,
+    masksConfigured: false,
     navigationPointTimer: null,
     pointSizeRenderTimer: null,
     zoomDetailTimer: null,
@@ -341,6 +347,39 @@ function getReprojectionGpuRenderer() {
 
 function currentReprojectionImage() {
     return reprojectionState.images[reprojectionState.currentIndex] || null;
+}
+
+function maskedInputEnabled(image = currentReprojectionImage()) {
+    return Boolean(reprojectionMask.checked && image?.has_mask);
+}
+
+function syncReprojectionMaskControl() {
+    const available = Boolean(currentReprojectionImage()?.has_mask);
+    reprojectionMaskField.hidden = !reprojectionState.masksConfigured;
+    reprojectionMask.disabled = !available;
+    reprojectionInvertMask.disabled = !available;
+    reprojectionMask.title = available
+        ? "Black out pixels where the image mask is zero"
+        : "No mask is available for this image";
+    reprojectionInvertMask.title = available
+        ? "Reverse which mask values retain the input image"
+        : "No mask is available for this image";
+}
+
+function refreshReprojectionInputMask() {
+    const image = currentReprojectionImage();
+    if (!image) {
+        return;
+    }
+    const urls = reprojectionUrls(
+        image,
+        reprojectionIdentity.id,
+        currentZoomDetailMaxSize(image)
+    );
+    reprojectionState.currentInputUrl = urls.input;
+    if (paneSources.isImage(reprojectionState.rightSource)) {
+        refreshReprojectionInputVisibility();
+    }
 }
 
 function sourceRenderPath(source, image = currentReprojectionImage()) {
@@ -1193,6 +1232,8 @@ async function initializeReprojectionCapability() {
         reprojectionState.datasetNamespace = capabilities.dataset_namespace;
         reprojectionState.maxRenderSize = capabilities.max_reprojection_size;
         reprojectionState.maxInputSize = capabilities.max_input_size || 4096;
+        reprojectionState.masksConfigured = Boolean(capabilities.image_masks);
+        syncReprojectionMaskControl();
         reprojectionState.configuredGeometries =
             capabilities.configured_geometries
             || (capabilities.configured_geometry
@@ -1262,6 +1303,7 @@ async function loadReprojectionImages() {
         );
         reprojectionState.currentIndex = matchingIndex >= 0 ? matchingIndex : 0;
         reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
+        syncReprojectionMaskControl();
         loadInitialReprojectionFrameIfVisible();
     } catch (error) {
         setReprojectionStatus(error.message, true);
@@ -2112,6 +2154,8 @@ function reprojectionUrls(
     const base = `/api/reprojection/${image.id}`;
     const dataset = encodeURIComponent(reprojectionState.datasetNamespace);
     const stream = encodeURIComponent(requestStream);
+    const masked = maskedInputEnabled(image) ? 1 : 0;
+    const invertMask = masked && reprojectionInvertMask.checked ? 1 : 0;
     const geometry = geometryToken === null
         ? "" : `&geometry=${encodeURIComponent(geometryToken)}`;
     const customClipping = !isDefaultGpuClippingRange();
@@ -2139,6 +2183,7 @@ function reprojectionUrls(
     );
     return {
         input: `${base}/input?max_size=${inputMaxSize}`
+            + `&masked=${masked}&invert_mask=${invertMask}`
             + `&format=jpeg-v1&dataset=${dataset}&stream=${stream}`,
         render: `${base}/render?max_size=${pointRender.maxSize}`
             + `&color=${encodeURIComponent(reprojectionColor.value)}`
@@ -2951,6 +2996,7 @@ function loadReprojectionFrame(index) {
         0, Math.min(reprojectionState.images.length - 1, Number(index))
     );
     const image = reprojectionState.images[reprojectionState.currentIndex];
+    syncReprojectionMaskControl();
     const nextLeftPath = sourceRenderPath(reprojectionState.leftSource, image);
     const nextRightPath = sourceRenderPath(reprojectionState.rightSource, image);
     const serverRouteChanged =
@@ -3392,6 +3438,17 @@ function applyBackgroundColors() {
     input.addEventListener("change", () => applyBackgroundColors());
 });
 reprojectionFlip.addEventListener("change", applyReprojectionFlip);
+reprojectionMask.addEventListener("change", () => {
+    syncReprojectionMaskControl();
+    if (reprojectionState.loaded) {
+        refreshReprojectionInputMask();
+    }
+});
+reprojectionInvertMask.addEventListener("change", () => {
+    if (reprojectionState.loaded) {
+        refreshReprojectionInputMask();
+    }
+});
 reprojectionShowOutsideFrame.addEventListener("change", () => {
     applyReprojectionViewTransform();
     if (!reprojectionState.loaded) {
@@ -3524,6 +3581,16 @@ window.addEventListener("keydown", event => {
     } else if (event.key.toLowerCase() === "y") {
         event.preventDefault();
         cyclePaneSource("right", event.shiftKey ? -1 : 1);
+    } else if (event.key.toLowerCase() === "m"
+            && !event.repeat
+            && !reprojectionMask.disabled) {
+        event.preventDefault();
+        reprojectionMask.click();
+    } else if (event.key.toLowerCase() === "i"
+            && !event.repeat
+            && !reprojectionInvertMask.disabled) {
+        event.preventDefault();
+        reprojectionInvertMask.click();
     }
 });
 window.addEventListener("keyup", event => {

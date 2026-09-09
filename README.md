@@ -65,6 +65,21 @@ python main.py -i /path/to/images -c /path/to/sparse \
     -g /path/to/points.ply /path/to/mesh.ply /path/to/gaussians.ply
 ```
 
+An optional mask directory can mirror the image hierarchy. Mask files may use
+the image filename or the same stem with a common image extension, such as
+`images/cam0/frame.jpg` and `masks/cam0/frame.png`:
+
+```bash
+python main.py -i /path/to/images -c /path/to/sparse -m /path/to/masks
+```
+
+When masks are configured, the 3D reprojection Comparison controls include a
+**Masked input** and **Invert mask** checkboxes. White mask pixels retain the
+input image, black mask pixels become black, and intermediate grayscale values
+attenuate the image. **Invert mask** is off by default and reverses those mask
+values when enabled. Press `m` in the reprojection viewer to toggle masked input.
+Press `i` to toggle mask inversion.
+
 ```bash
 python main.py -i /path/to/your/images -d /path/to/your/colmap/database.db
 ```
@@ -205,7 +220,7 @@ The following API endpoints are available:
 *   `DELETE /api/reprojection/geometry`: Restores COLMAP `points3D`.
 *   `POST /api/reprojection/stream/heartbeat`: Keeps a viewer's geometry active.
 *   `DELETE /api/reprojection/stream`: Explicitly releases a viewer's geometry.
-*   `GET /api/reprojection/{image_id}/input`: Returns normalized input pixels for comparison.
+*   `GET /api/reprojection/{image_id}/input`: Returns normalized input pixels for comparison; `masked=true` applies a configured image mask and `invert_mask=true` reverses it.
 *   `GET /api/reprojection/{image_id}/render`: Returns a z-buffered geometric point rendering.
 *   `POST /api/set_source/{source_name}`: Sets the active data source.
 *   `GET /api/images`: Returns a list of all images.
