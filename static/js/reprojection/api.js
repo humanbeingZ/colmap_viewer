@@ -29,6 +29,17 @@
             return jsonResponse(await this.fetch("/api/reprojection/images"));
         }
 
+        async colmapPoints() {
+            const response = await this.fetch(
+                "/api/reprojection/colmap-points.ply"
+            );
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.detail || `HTTP ${response.status}`);
+            }
+            return response.arrayBuffer();
+        }
+
         async uploadGeometry(file, generation, signal) {
             const query = `filename=${encodeURIComponent(file.name)}`
                 + `&${this.streamQuery()}&generation=${generation}`;

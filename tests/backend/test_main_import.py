@@ -14,6 +14,7 @@ from viewer.app import (
     _accepts_content_encoding,
     _configured_geometry_descriptor,
     get_configured_mesh_chunk,
+    get_reprojection_colmap_points,
     _is_loopback_request,
     _matching_image_preview,
     _static_asset_version,
@@ -53,7 +54,31 @@ class _FakeDescriptorService:
         self.warmed = True
 
 
+class _FakeColmapPointsService:
+    def __init__(self):
+        self.requested = False
+
+    @staticmethod
+    def has_reprojection_data():
+        return True
+
+    def iter_colmap_points_ply(self):
+        self.requested = True
+        return iter([b"ply\n", b"points"])
+
+
 class MainImportTest(unittest.TestCase):
+    def test_colmap_points_endpoint_streams_the_browser_point_cloud(self):
+        service = _FakeColmapPointsService()
+        with patch(
+            "viewer.app.colmap_service", service, create=True
+        ):
+            response = get_reprojection_colmap_points()
+
+        self.assertTrue(service.requested)
+        self.assertEqual(response.media_type, "application/octet-stream")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_server_entrypoint_imports(self):
         import main
 

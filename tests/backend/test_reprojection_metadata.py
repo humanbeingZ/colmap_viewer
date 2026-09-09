@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 from viewer.colmap_service import ColmapService
+from viewer.reprojection.core import GeometryData
 
 MINIMAL_ASCII_PLY = (
     b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"
@@ -55,6 +56,42 @@ class FakeReconstruction:
 
 
 class ReprojectionMetadataTest(unittest.TestCase):
+    def test_colmap_points_binary_ply_preserves_xyz_and_rgb(self):
+        service = ColmapService("")
+        service._colmap_geometry = GeometryData(
+            xyz=np.asarray([
+                [1.25, -2.5, 3.75],
+                [4.5, 5.25, -6.0],
+            ], dtype=np.float32),
+            rgb=np.asarray([
+                [10, 20, 30],
+                [40, 50, 60],
+            ], dtype=np.uint8),
+            name="COLMAP points3D",
+            kind="colmap",
+            revision=0,
+            cache_token="colmap",
+        )
+
+        chunks = list(service.iter_colmap_points_ply(chunk_size=1))
+
+        self.assertIn(b"element vertex 2\n", chunks[0])
+        vertex_dtype = np.dtype([
+            ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+            ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+        ])
+        vertices = np.frombuffer(b"".join(chunks[1:]), dtype=vertex_dtype)
+        np.testing.assert_allclose(
+            np.column_stack([vertices[axis] for axis in "xyz"]),
+            service._colmap_geometry.xyz,
+        )
+        np.testing.assert_array_equal(
+            np.column_stack([
+                vertices["red"], vertices["green"], vertices["blue"],
+            ]),
+            service._colmap_geometry.rgb,
+        )
+
     def test_images_include_exact_camera_and_world_to_camera_pose(self):
         service = ColmapService("")
         service.reconstruction = FakeReconstruction()

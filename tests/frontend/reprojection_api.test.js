@@ -7,6 +7,7 @@ const fetchImpl = async (url, options = {}) => {
     return {
         ok: true,
         json: async () => ({url}),
+        arrayBuffer: async () => new ArrayBuffer(0),
     };
 };
 
@@ -20,6 +21,7 @@ const fetchImpl = async (url, options = {}) => {
     await api.resetGeometry("viewer id:right");
     await api.heartbeat();
     await api.cancelRender();
+    const colmapPoints = await api.colmapPoints();
 
     assert.strictEqual(requests[0].url, "/api/capabilities?stream=viewer%20id");
     assert.ok(requests[1].url.includes("filename=cloud%20file.ply"));
@@ -43,6 +45,11 @@ const fetchImpl = async (url, options = {}) => {
     assert.strictEqual(requests[5].options.method, "DELETE");
     assert.strictEqual(requests[6].options.method, "POST");
     assert.strictEqual(requests[7].options.method, "POST");
+    assert.ok(colmapPoints instanceof ArrayBuffer);
+    assert.strictEqual(
+        requests[8].url,
+        "/api/reprojection/colmap-points.ply"
+    );
 
     console.log("reprojection API tests passed");
 })().catch(error => {

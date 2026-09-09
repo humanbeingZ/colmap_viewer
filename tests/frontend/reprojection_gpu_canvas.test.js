@@ -60,6 +60,52 @@ assert.strictEqual(gpuCanvas.shouldRenderRightOnly({
     leftPresentationActive: true,
     rightSourcePending: true,
 }), false, "a stale left capture cannot suppress the selected left render");
+assert.strictEqual(gpuCanvas.isCurrentIndependentFrame({
+    source: "points",
+    renderedSource: "points",
+    renderedMode: "independent",
+    frameKey: "size-3",
+    renderedFrameKey: "size-3",
+}), true, "a matching source and render signature can reuse its capture");
+assert.strictEqual(gpuCanvas.isCurrentIndependentFrame({
+    source: "points",
+    renderedSource: "points",
+    renderedMode: "independent",
+    frameKey: "size-15",
+    renderedFrameKey: "size-3",
+}), false, "a point-size change invalidates the captured frame");
+assert.strictEqual(gpuCanvas.shouldCaptureRightPane({
+    includeRightPane: true,
+    rightIsGpu: true,
+    sideBySide: false,
+    leftSource: "mesh-a",
+    rightSource: "mesh-b",
+    rightFrameCurrent: false,
+}), true, "different meshes use an independent right presentation");
+assert.strictEqual(gpuCanvas.shouldCaptureRightPane({
+    includeRightPane: true,
+    rightIsGpu: true,
+    sideBySide: false,
+    leftSource: "mesh-a",
+    rightSource: "mesh-a",
+    rightFrameCurrent: false,
+}), false, "a completed shared source needs no duplicate capture");
+assert.strictEqual(gpuCanvas.shouldCaptureRightPane({
+    includeRightPane: true,
+    rightIsGpu: true,
+    sideBySide: true,
+    leftSource: "mesh-a",
+    rightSource: "mesh-a",
+    rightFrameCurrent: false,
+}), true, "side-by-side panes always use independent surfaces");
+assert.strictEqual(gpuCanvas.shouldCaptureRightPane({
+    includeRightPane: true,
+    rightIsGpu: true,
+    sideBySide: false,
+    leftSource: "mesh-a",
+    rightSource: "points-b",
+    rightFrameCurrent: false,
+}), true, "appearance changes invalidate an existing right capture");
 
 function trackedClasses() {
     const classes = new Set();
@@ -123,7 +169,7 @@ const rightPresentationCases = [
         expected: "independent",
     },
     {
-        name: "keeps an existing independent frame when left matches it",
+        name: "shares a matching source after the left render commits",
         input: {
             selectedSource: "gaussian",
             renderedSource: "gaussian",
@@ -134,7 +180,7 @@ const rightPresentationCases = [
             leftIsGpu: true,
             sharesLeftSurface: true,
         },
-        expected: "independent",
+        expected: "same",
     },
     {
         name: "retains a shared right source until its independent frame is ready",
@@ -208,6 +254,117 @@ for (const testCase of rightPresentationCases) {
         gpuCanvas.rightPresentationMode(testCase.input),
         testCase.expected,
         testCase.name
+    );
+}
+
+const rightLayerCases = [
+    ["independent mesh", true, true, "independent",
+        [true, true, true, false, false]],
+    ["shared mesh", true, true, "same",
+        [false, true, false, false, true]],
+    ["independent COLMAP render", true, false, "independent",
+        [false, true, false, true, false]],
+    ["camera image", false, false, "independent",
+        [false, false, false, true, false]],
+];
+function rightLayerFlags(state) {
+    return [
+        state.captureActive,
+        state.geometryActive,
+        state.gpuIndependent,
+        state.rasterVisible,
+        state.sameGeometry,
+    ];
+}
+for (const [name, sourceIsGeometry, sourceIsGpu, mode, expected] of
+    rightLayerCases) {
+    assert.deepStrictEqual(
+        rightLayerFlags(gpuCanvas.rightLayerState({
+            sourceIsGeometry, sourceIsGpu, mode,
+        })),
+        expected,
+        name
+    );
+}
+assert.throws(
+    () => gpuCanvas.rightLayerState({
+        sourceIsGeometry: true,
+        sourceIsGpu: false,
+        mode: "same",
+    }),
+    /Only GPU geometry/,
+    "a raster presentation cannot claim to share the live GPU surface"
+);
+assert.throws(
+    () => gpuCanvas.rightLayerState({
+        sourceIsGeometry: true,
+        sourceIsGpu: true,
+        mode: "retain",
+    }),
+    /Unsupported right presentation mode/,
+    "an uncommitted retain state cannot be applied to DOM layers"
+);
+
+const baseTransition = {
+    selectedSource: "mesh-b",
+    renderedSource: "mesh-a",
+    renderedMode: "same",
+    leftSelectedSource: "mesh-a",
+    leftRenderedSource: "mesh-a",
+    selectedIsGpu: true,
+    leftIsGpu: true,
+    sharesLeftSurface: true,
+};
+const transitionCases = [
+    ["split mesh A/B requests a capture", {}, false, "retain", true],
+    ["split mesh A/B reuses its capture", {
+        renderedSource: "mesh-b", renderedMode: "independent",
+    }, false, "independent", false],
+    ["split mesh A/A replaces an old B capture", {
+        selectedSource: "mesh-a", renderedSource: "mesh-b",
+        renderedMode: "independent",
+    }, false, "same", false],
+    ["split mesh A/A replaces an existing A capture", {
+        selectedSource: "mesh-a", renderedSource: "mesh-a",
+        renderedMode: "independent",
+    }, false, "same", false],
+    ["split Gaussian A/A waits for the left commit", {
+        selectedSource: "gaussian-a", renderedSource: "gaussian-a",
+        renderedMode: "independent", leftSelectedSource: "gaussian-a",
+        leftRenderedSource: "mesh-b",
+    }, false, "independent", false],
+    ["split mesh/Gaussian requests a capture", {
+        selectedSource: "gaussian-a",
+    }, false, "retain", true],
+    ["side-by-side mesh A/A requests a separate surface", {
+        selectedSource: "mesh-a", renderedSource: "mesh-a",
+        sharesLeftSurface: false,
+    }, true, "retain", true],
+    ["camera image never requests a GPU capture", {
+        selectedSource: "image", selectedIsGpu: false,
+    }, false, "retain", false],
+];
+for (const [name, overrides, sideBySide, expectedMode, expectedCapture] of
+    transitionCases) {
+    const input = {...baseTransition, ...overrides};
+    const rightFrameCurrent = input.renderedSource === input.selectedSource
+        && input.renderedMode === "independent";
+    assert.strictEqual(
+        gpuCanvas.rightPresentationMode(input),
+        expectedMode,
+        `${name}: presentation mode`
+    );
+    assert.strictEqual(
+        gpuCanvas.shouldCaptureRightPane({
+            includeRightPane: true,
+            rightIsGpu: input.selectedIsGpu,
+            sideBySide,
+            leftSource: input.leftSelectedSource,
+            rightSource: input.selectedSource,
+            rightFrameCurrent,
+        }),
+        expectedCapture,
+        `${name}: capture decision`
     );
 }
 

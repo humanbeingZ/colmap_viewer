@@ -8,7 +8,12 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -276,6 +281,20 @@ async def get_reprojection_images():
             detail="3D reprojection requires a sparse model with registered camera poses.",
         )
     return colmap_service.get_reprojection_images()
+
+
+@app.get("/api/reprojection/colmap-points.ply")
+def get_reprojection_colmap_points():
+    if not colmap_service.has_reprojection_data():
+        raise HTTPException(
+            status_code=409,
+            detail="A sparse reconstruction is required for COLMAP points.",
+        )
+    return StreamingResponse(
+        colmap_service.iter_colmap_points_ply(),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/reprojection/configured-geometry")

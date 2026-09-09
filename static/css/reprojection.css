@@ -620,8 +620,13 @@
 }
 
 .reprojection-right-geometry-layer {
+    display: none;
     z-index: 2;
     clip-path: inset(0 0 0 50%);
+}
+
+.reprojection-right-geometry-layer.capture-active {
+    display: block;
 }
 
 .reprojection-captured-geometry {
@@ -695,19 +700,13 @@
     );
 }
 
-.reprojection-input-layer.geometry-active.gpu-independent {
-    background: transparent;
-}
-
-.reprojection-input-layer.geometry-active.same-geometry,
-.reprojection-input-layer.geometry-active.gpu-composited {
+.reprojection-input-layer.geometry-active.gpu-independent,
+.reprojection-input-layer.geometry-active.same-geometry {
     background: transparent;
 }
 
 .reprojection-input-layer.geometry-active.same-geometry .reprojection-input,
-.reprojection-input-layer.geometry-active.gpu-composited .reprojection-input,
-.reprojection-input-layer.geometry-active.same-geometry .reprojection-right-geometry,
-.reprojection-input-layer.geometry-active.gpu-composited .reprojection-right-geometry {
+.reprojection-input-layer.geometry-active.same-geometry .reprojection-right-geometry {
     visibility: hidden;
 }
 

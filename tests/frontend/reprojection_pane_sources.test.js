@@ -18,6 +18,20 @@ assert.strictEqual(paneSources.isPointCloud("mesh", [
 assert.strictEqual(paneSources.isPointCloud("points", [
     {gpuKey: "points", kind: "point cloud"},
 ]), true);
+assert.strictEqual(paneSources.renderPath("mesh"), "gpu");
+assert.strictEqual(paneSources.renderPath("image"), "image");
+assert.strictEqual(paneSources.renderPath("colmap", {
+    colmapGpuReady: true,
+    cameraSupported: true,
+}), "gpu");
+assert.strictEqual(paneSources.renderPath("colmap", {
+    colmapGpuReady: true,
+    cameraSupported: false,
+}), "server", "unsupported cameras keep the distortion-aware server path");
+assert.strictEqual(paneSources.renderPath("colmap", {
+    colmapGpuReady: false,
+    cameraSupported: true,
+}), "server", "COLMAP uses the server while its GPU geometry is unavailable");
 assert.strictEqual(paneSources.cycleIndex(0, 4, 1), 1);
 assert.strictEqual(paneSources.cycleIndex(0, 4, -1), 3);
 assert.strictEqual(paneSources.cycleIndex(3, 4, 1), 0);

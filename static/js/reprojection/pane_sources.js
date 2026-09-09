@@ -27,6 +27,20 @@
         );
     }
 
+    function renderPath(source, {
+        colmapGpuReady = false,
+        cameraSupported = false,
+    } = {}) {
+        if (isImage(source)) {
+            return "image";
+        }
+        if (!isColmap(source)) {
+            return "gpu";
+        }
+        return colmapGpuReady && cameraSupported
+            ? "gpu" : "server";
+    }
+
     function cycleIndex(currentIndex, optionCount, direction = 1) {
         if (optionCount <= 0) {
             return -1;
@@ -66,6 +80,7 @@
         isGpuGeometry,
         isGeometry,
         isPointCloud,
+        renderPath,
         sourceLabelDisplay,
         cycleIndex,
         uniqueLabel,

@@ -40,6 +40,19 @@ assert.deepStrictEqual(pointSize.renderParameters({
     navigationPreview: false,
     maxRenderSize: 4096,
 }), {maxSize: 1600, radius: 1});
+for (const browserPointSize of [1, 3, 5, 7, 9, 11, 13, 15]) {
+    const server = pointSize.renderParameters({
+        pointSize: browserPointSize,
+        baseMaxSize: 1600,
+        navigationPreview: false,
+        maxRenderSize: 4096,
+    });
+    assert.strictEqual(
+        2 * server.radius + 1,
+        browserPointSize,
+        "the distortion-aware fallback keeps the GPU point diameter"
+    );
+}
 assert.deepStrictEqual(pointSize.renderParameters({
     pointSize: 0.5,
     baseMaxSize: 1600,

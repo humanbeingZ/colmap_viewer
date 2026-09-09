@@ -6,7 +6,7 @@ import hmac
 import logging
 import secrets
 import threading
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from enum import Enum
 
 import numpy as np
@@ -452,6 +452,42 @@ class ColmapService:
                 ).tolist(),
             })
         return sorted(result, key=lambda item: item["name"])
+
+    def iter_colmap_points_ply(
+        self, chunk_size: int = 100_000
+    ) -> Iterator[bytes]:
+        """Yield the reconstruction points as a packed binary PLY stream."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        geometry = self._ensure_geometry_arrays()
+        count = len(geometry.xyz)
+        header = (
+            "ply\n"
+            "format binary_little_endian 1.0\n"
+            f"element vertex {count}\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property uchar red\n"
+            "property uchar green\n"
+            "property uchar blue\n"
+            "end_header\n"
+        ).encode("ascii")
+        yield header
+        vertex_dtype = np.dtype([
+            ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+            ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+        ])
+        for start in range(0, count, chunk_size):
+            stop = min(count, start + chunk_size)
+            vertices = np.empty(stop - start, dtype=vertex_dtype)
+            vertices["x"] = geometry.xyz[start:stop, 0]
+            vertices["y"] = geometry.xyz[start:stop, 1]
+            vertices["z"] = geometry.xyz[start:stop, 2]
+            vertices["red"] = geometry.rgb[start:stop, 0]
+            vertices["green"] = geometry.rgb[start:stop, 1]
+            vertices["blue"] = geometry.rgb[start:stop, 2]
+            yield vertices.tobytes()
 
     def _get_reprojection_image(self, image_id: int):
         if not self.reconstruction or image_id not in self.reconstruction.images:

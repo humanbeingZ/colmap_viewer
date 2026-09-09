@@ -194,6 +194,18 @@ class ReprojectionRendererTest(unittest.TestCase):
         ))
         np.testing.assert_array_equal(pixels[160, 162], [0, 255, 0])
 
+    def test_server_fallback_uses_a_symmetric_circular_point_footprint(self):
+        pixels = decode_rgba(self.render(
+            [[0, 0, 1]], [[12, 34, 56]], radius=3
+        ))
+        footprint = pixels[157:164, 157:164, 3] > 0
+        np.testing.assert_array_equal(footprint, footprint[::-1, :])
+        np.testing.assert_array_equal(footprint, footprint[:, ::-1])
+        self.assertTrue(footprint[0, 3])
+        self.assertTrue(footprint[3, 0])
+        self.assertFalse(footprint[0, 0])
+        self.assertFalse(footprint[0, -1])
+
     def test_white_mode_and_encoded_result_cache(self):
         first = self.render([[0, 0, 1]], [[12, 34, 56]], color_mode="white")
         second = self.render([[0, 0, 1]], [[12, 34, 56]], color_mode="white")

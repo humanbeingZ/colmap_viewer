@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build_frontend.mjs",
-    "test": "for test_file in tests/frontend/*.test.js tests/frontend/*.test.mjs; do node \"$test_file\"; done"
+    "test": "set -e; for test_file in tests/frontend/*.test.js tests/frontend/*.test.mjs; do node \"$test_file\"; done"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

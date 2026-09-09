@@ -29,11 +29,6 @@
         leftIsGpu,
         sharesLeftSurface,
     }) {
-        const hasIndependentFrame = selectedSource === renderedSource
-            && renderedMode === "independent";
-        if (hasIndependentFrame) {
-            return "independent";
-        }
         const canShareLeft = sharesLeftSurface
             && leftIsGpu
             && selectedIsGpu
@@ -42,7 +37,29 @@
         if (canShareLeft) {
             return "same";
         }
+        const hasIndependentFrame = selectedSource === renderedSource
+            && renderedMode === "independent";
+        if (hasIndependentFrame) {
+            return "independent";
+        }
         return "retain";
+    }
+
+    function rightLayerState({sourceIsGeometry, sourceIsGpu, mode}) {
+        if (mode !== "independent" && mode !== "same") {
+            throw new Error(`Unsupported right presentation mode: ${mode}`);
+        }
+        if (mode === "same" && !sourceIsGpu) {
+            throw new Error("Only GPU geometry can share the left surface");
+        }
+        const captureActive = mode === "independent" && sourceIsGpu;
+        return {
+            captureActive,
+            geometryActive: sourceIsGeometry,
+            gpuIndependent: captureActive,
+            rasterVisible: mode === "independent" && !sourceIsGpu,
+            sameGeometry: mode === "same",
+        };
     }
 
     function shouldRenderRightOnly({
@@ -56,6 +73,32 @@
             && leftPresentationActive
             && leftPresentedSource === leftSelectedSource
             && rightSourcePending;
+    }
+
+    function isCurrentIndependentFrame({
+        source,
+        renderedSource,
+        renderedMode,
+        frameKey,
+        renderedFrameKey,
+    }) {
+        return renderedMode === "independent"
+            && renderedSource === source
+            && renderedFrameKey === frameKey;
+    }
+
+    function shouldCaptureRightPane({
+        includeRightPane,
+        rightIsGpu,
+        sideBySide,
+        leftSource,
+        rightSource,
+        rightFrameCurrent,
+    }) {
+        return includeRightPane
+            && rightIsGpu
+            && (sideBySide || rightSource !== leftSource)
+            && !rightFrameCurrent;
     }
 
     function createCapturedPresentation(
@@ -89,8 +132,11 @@
     const api = {
         canvasForEngine,
         createCapturedPresentation,
+        isCurrentIndependentFrame,
         needsLiveOutgoingCanvas,
+        rightLayerState,
         rightPresentationMode,
+        shouldCaptureRightPane,
         shouldRenderRightOnly,
         sourceTransition,
         waitForPresentation,

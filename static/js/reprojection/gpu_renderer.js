@@ -7,13 +7,11 @@ import {
     normalView,
     sRGBTransferEOTF,
     shapeCircle,
-    texture,
     uniform,
     varying,
     vec3,
     vec4,
     vertexColor,
-    viewportUV,
 } from "three/tsl";
 
 import {
@@ -105,7 +103,7 @@ function formatFileSize(bytes) {
 }
 
 // Three.js gives explicit offscreen render targets a `depth24plus` attachment.
-// Upgrade the comparison/capture targets we own before their first use so
+// Upgrade the capture targets we own before their first use so
 // they retain floating-point depth precision. Do not replace the renderer's
 // private on-screen framebuffer attachment: mutating that internal target can
 // invalidate an already cached WebGPU render pass and drop the graphics device.
@@ -116,7 +114,7 @@ function forceFloatDepthTarget(target) {
     const width = Math.max(1, target.width | 0);
     const height = Math.max(1, target.height | 0);
     // The depth attachment must match the owning target's sample count; a
-    // single-sample depth texture on an MSAA comparison target makes the render
+    // single-sample depth texture on an MSAA capture target makes the render
     // pass invalid on strict WebGPU backends.
     const samples = Math.max(0, target.samples | 0);
     if (!target.depthTexture) {
@@ -167,11 +165,6 @@ export class ReprojectionGpuRenderer {
         this.farClipFraction = 1;
         this.clippingReferenceKey = null;
         this.meshBrightnessNode = uniform(this.meshBrightness);
-        this.comparisonWidthNode = uniform(1);
-        this.comparisonHeightNode = uniform(1);
-        this.comparisonNormalXNode = uniform(1);
-        this.comparisonNormalYNode = uniform(0);
-        this.comparisonThresholdNode = uniform(0.5);
         this.renderer = new THREE.WebGPURenderer({
             canvas,
             antialias: true,
@@ -240,38 +233,6 @@ export class ReprojectionGpuRenderer {
         const result = this._operationQueue.then(operation, operation);
         this._operationQueue = result.catch(() => {});
         return result;
-    }
-
-    ensureComparisonTargets(width, height) {
-        if (!this._comparisonLeftTarget) {
-            this._comparisonLeftTarget = new THREE.RenderTarget(width, height);
-            this._comparisonRightTarget = new THREE.RenderTarget(width, height);
-            forceFloatDepthTarget(this._comparisonLeftTarget);
-            forceFloatDepthTarget(this._comparisonRightTarget);
-            const leftColor = texture(
-                this._comparisonLeftTarget.texture, viewportUV
-            );
-            const rightColor = texture(
-                this._comparisonRightTarget.texture, viewportUV
-            );
-            const projection = viewportUV.x.mul(this.comparisonWidthNode)
-                .mul(this.comparisonNormalXNode)
-                .add(
-                    viewportUV.y.mul(this.comparisonHeightNode)
-                        .mul(this.comparisonNormalYNode)
-                );
-            const material = new THREE.NodeMaterial();
-            material.fragmentNode = projection
-                .greaterThanEqual(this.comparisonThresholdNode)
-                .select(rightColor, leftColor);
-            material.depthTest = false;
-            material.depthWrite = false;
-            this._comparisonQuad = new THREE.QuadMesh(material);
-        } else if (this._comparisonLeftTarget.width !== width
-                || this._comparisonLeftTarget.height !== height) {
-            this._comparisonLeftTarget.setSize(width, height);
-            this._comparisonRightTarget.setSize(width, height);
-        }
     }
 
     createMeshMaterial(hasVertexColors) {
@@ -1164,94 +1125,6 @@ export class ReprojectionGpuRenderer {
         const gpuQueue = this.renderer.backend?.device?.queue;
         if (gpuQueue?.onSubmittedWorkDone) {
             await gpuQueue.onSubmittedWorkDone();
-        }
-    }
-
-    renderGeometryTarget(key, target, image, width, height, region, clipFrame) {
-        this.activateGeometry(key);
-        this.configureCamera(image, region);
-        this.cullMeshChunks();
-        this.renderer.setRenderTarget(target);
-        this.configureFrameScissor(
-            image, width, height, region, clipFrame, target
-        );
-        this.renderer.render(this.scene, this.camera);
-        this.renderer.setScissorTest(false);
-        target.scissorTest = false;
-    }
-
-    compositeComparison(width, height, split) {
-        if (!this._comparisonQuad) {
-            return;
-        }
-        this.comparisonWidthNode.value = split.width;
-        this.comparisonHeightNode.value = split.height;
-        this.comparisonNormalXNode.value = split.normalX;
-        this.comparisonNormalYNode.value = split.normalY;
-        this.comparisonThresholdNode.value = split.threshold;
-        this.renderer.setRenderTarget(null);
-        this.renderer.setSize(width, height, false);
-        this.renderer.setScissorTest(false);
-        this._comparisonQuad.render(this.renderer);
-    }
-
-    updateComparisonSplit(width, height, split) {
-        return this.runGpuOperation(
-            () => this.compositeComparison(width, height, split)
-        );
-    }
-
-    hasComparison(leftKey, rightKey) {
-        return this.comparisonKeys?.[0] === leftKey
-            && this.comparisonKeys?.[1] === rightKey;
-    }
-
-    supportsComparison(leftKey, rightKey) {
-        return this.geometries.get(leftKey)?.engine === "three"
-            && this.geometries.get(rightKey)?.engine === "three";
-    }
-
-    renderComparison(
-        leftKey, rightKey, image, width, height, region, split,
-        clipFrame = false
-    ) {
-        return this.runGpuOperation(() => this._renderComparison(
-            leftKey, rightKey, image, width, height, region, split, clipFrame
-        ));
-    }
-
-    async _renderComparison(
-        leftKey, rightKey, image, width, height, region, split, clipFrame
-    ) {
-        if (!this.geometries.has(leftKey) || !this.geometries.has(rightKey)) {
-            return;
-        }
-        await this.ready;
-        this.ensureComparisonTargets(width, height);
-        const previousKey = this.activeKey;
-        const previousTarget = this.renderer.getRenderTarget();
-        try {
-            this.renderGeometryTarget(
-                leftKey, this._comparisonLeftTarget,
-                image, width, height, region, clipFrame
-            );
-            this.renderGeometryTarget(
-                rightKey, this._comparisonRightTarget,
-                image, width, height, region, clipFrame
-            );
-            this.comparisonKeys = [leftKey, rightKey];
-            this.compositeComparison(width, height, split);
-            const gpuQueue = this.renderer.backend?.device?.queue;
-            if (gpuQueue?.onSubmittedWorkDone) {
-                await gpuQueue.onSubmittedWorkDone();
-            }
-        } finally {
-            this.renderer.setScissorTest(false);
-            this.renderer.setRenderTarget(previousTarget);
-            if (previousKey !== this.activeKey
-                    && this.geometries.has(previousKey)) {
-                this.activateGeometry(previousKey);
-            }
         }
     }
 
