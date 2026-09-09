@@ -48,6 +48,16 @@
         return `${preferred} (${suffix})`;
     }
 
+    function sourceLabelDisplay(mode) {
+        if (mode === "temporary") {
+            return {visible: true, timeoutMs: 2000};
+        }
+        if (mode === "hidden") {
+            return {visible: false, timeoutMs: null};
+        }
+        return {visible: true, timeoutMs: null};
+    }
+
     const api = {
         IMAGE,
         COLMAP,
@@ -56,6 +66,7 @@
         isGpuGeometry,
         isGeometry,
         isPointCloud,
+        sourceLabelDisplay,
         cycleIndex,
         uniqueLabel,
     };

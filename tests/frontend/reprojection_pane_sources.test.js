@@ -33,5 +33,22 @@ assert.strictEqual(
     "point_cloud.ply (3)"
 );
 assert.strictEqual(paneSources.uniqueLabel("  ", []), "Geometry");
+assert.deepStrictEqual(
+    paneSources.sourceLabelDisplay("always"),
+    {visible: true, timeoutMs: null}
+);
+assert.deepStrictEqual(
+    paneSources.sourceLabelDisplay("temporary"),
+    {visible: true, timeoutMs: 2000}
+);
+assert.deepStrictEqual(
+    paneSources.sourceLabelDisplay("hidden"),
+    {visible: false, timeoutMs: null}
+);
+assert.deepStrictEqual(
+    paneSources.sourceLabelDisplay("unexpected"),
+    {visible: true, timeoutMs: null},
+    "unknown modes preserve the always-visible default"
+);
 
 console.log("reprojection pane source tests passed");

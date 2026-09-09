@@ -45,6 +45,9 @@ const reprojectionGaussianCanvas = document.getElementById(
 );
 const reprojectionDivider = document.getElementById("reprojection-divider");
 const reprojectionLayout = document.getElementById("reprojection-layout");
+const reprojectionSourceLabelMode = document.getElementById(
+    "reprojection-source-label-mode"
+);
 const reprojectionSplitAngle = document.getElementById("reprojection-split-angle");
 const reprojectionShowOutsideFrame = document.getElementById(
     "reprojection-show-outside-frame"
@@ -177,18 +180,24 @@ const reprojectionSourceBadgeTimers = {left: null, right: null};
 function showReprojectionSourceBadge(pane, source) {
     window.clearTimeout(reprojectionSourceBadgeTimers[pane]);
     reprojectionSourceBadgeTimers[pane] = null;
+    const display = paneSources.sourceLabelDisplay(
+        reprojectionSourceLabelMode.value
+    );
     const label = reprojectionSourceLabel(source);
     for (const badge of reprojectionSourceBadges[pane]) {
         badge.textContent = label;
         badge.title = label;
-        badge.classList.add("visible");
+        badge.classList.toggle("visible", display.visible);
+    }
+    if (display.timeoutMs === null) {
+        return;
     }
     reprojectionSourceBadgeTimers[pane] = window.setTimeout(() => {
         for (const badge of reprojectionSourceBadges[pane]) {
             badge.classList.remove("visible");
         }
         reprojectionSourceBadgeTimers[pane] = null;
-    }, 2000);
+    }, display.timeoutMs);
 }
 
 function showReprojectionSourceBadges() {
@@ -3256,6 +3265,10 @@ reprojectionLayout.addEventListener("change", () => {
         renderReprojectionGpuFrame(reprojectionState.generation);
     }
 });
+reprojectionSourceLabelMode.addEventListener(
+    "change", showReprojectionSourceBadges
+);
+showReprojectionSourceBadges();
 reprojectionInteraction.attach();
 reprojectionViewer.addEventListener("wheel", event => {
     if (event.altKey) {
