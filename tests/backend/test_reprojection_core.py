@@ -49,6 +49,19 @@ class SupersessionTrackerTest(unittest.TestCase):
         tracker.check("viewer-a", newest)
         tracker.check("viewer-b", other)
 
+    def test_commit_does_not_publish_a_superseded_request(self):
+        tracker = SupersessionTracker(RenderSuperseded, lambda value: value)
+        old_request = tracker.begin("viewer")
+        tracker.begin("viewer")
+        published = []
+
+        with self.assertRaises(RenderSuperseded):
+            tracker.commit(
+                "viewer", old_request, lambda: published.append(True)
+            )
+
+        self.assertEqual(published, [])
+
 
 class ViewerGeometryStoreTest(unittest.TestCase):
     def setUp(self):
@@ -82,6 +95,17 @@ class ViewerGeometryStoreTest(unittest.TestCase):
         with self.assertRaises(GeometryCapacityError):
             self.store.begin_upload("viewer-c", 1)
         self.assertEqual(self.store.status("viewer-a", 0)["name"], "a")
+
+    def test_preloaded_geometry_selection_is_scoped_per_stream(self):
+        self.store.select("viewer:left", geometry("left geometry"))
+        self.store.select("viewer:right", geometry("right geometry"))
+
+        self.assertEqual(
+            self.store.status("viewer:left", 0)["name"], "left geometry"
+        )
+        self.assertEqual(
+            self.store.status("viewer:right", 0)["name"], "right geometry"
+        )
 
     def test_idle_geometry_is_reclaimed_before_capacity_check(self):
         self.upload("viewer-a", "a")

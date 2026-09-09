@@ -6,6 +6,7 @@ import hmac
 import logging
 import secrets
 import threading
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 from enum import Enum
 
@@ -21,6 +22,7 @@ from .geometry.ply import (
 from .reprojection.core import (
     BoundedLRUCache,
     GeometryData,
+    GeometrySelectionSuperseded,
     InputSuperseded,
     SupersessionTracker,
     ViewerGeometryStore,
@@ -50,6 +52,21 @@ TWO_VIEW_CONFIGURATION_LABELS = {
 }
 
 
+@dataclass
+class _ConfiguredGeometry:
+    path: str
+    token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    identity: Any = None
+    server_loaded: bool = False
+    mesh_stream: Optional[StreamablePlyMesh] = None
+    mesh_stream_inspected: bool = False
+    mesh_warmup_key: Optional[str] = None
+    server_geometry: Optional[GeometryData] = None
+    server_load_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False
+    )
+
+
 class ColmapService:
     MAX_EXTERNAL_POINTS = 5_000_000
     MAX_MESH_TRIANGLES = 2_000_000
@@ -67,17 +84,22 @@ class ColmapService:
         project_path: Optional[str] = None,
         db_path: Optional[str] = None,
         geometry_path: Optional[str] = None,
+        geometry_paths: Optional[List[str]] = None,
     ):
         self.image_base_path = image_path
         self.project_path = project_path
         self.db_path = db_path
-        self.geometry_path = geometry_path
-        self._geometry_file_token = secrets.token_urlsafe(32)
-        self._configured_geometry_server_loaded = False
-        self._configured_geometry_identity = None
-        self._configured_mesh_stream: Optional[StreamablePlyMesh] = None
-        self._configured_mesh_stream_inspected = False
-        self._configured_mesh_warmup_key: Optional[str] = None
+        initial_geometry_paths = list(geometry_paths or [])
+        if geometry_path and not initial_geometry_paths:
+            initial_geometry_paths.append(geometry_path)
+        self.geometry_path = (
+            initial_geometry_paths[0] if initial_geometry_paths else None
+        )
+        self._configured_geometries = [
+            _ConfiguredGeometry(path) for path in dict.fromkeys(
+                initial_geometry_paths
+            )
+        ]
         self._configured_geometry_lock = threading.RLock()
         namespace_source = "\0".join(
             os.path.abspath(path) if path else ""
@@ -109,6 +131,9 @@ class ColmapService:
         self._input_requests = SupersessionTracker(
             InputSuperseded, self._request_stream
         )
+        self._geometry_selection_requests = SupersessionTracker(
+            GeometrySelectionSuperseded, self._request_stream
+        )
         self._warmup_started = False
         self._png_cache = BoundedLRUCache(20)
         self._ply_loader = PlyGeometryLoader(
@@ -120,148 +145,211 @@ class ColmapService:
             png_cache=self._png_cache,
         )
 
-    def _refresh_configured_geometry_locked(self, path: str) -> None:
-        identity = geometry_file_identity(path)
-        if identity == self._configured_geometry_identity:
+    def _refresh_configured_geometry_locked(
+        self, configured: _ConfiguredGeometry
+    ) -> None:
+        identity = geometry_file_identity(configured.path)
+        if identity == configured.identity:
             return
-        if self._configured_geometry_identity is not None:
+        if configured.identity is not None:
             # Bind every browser-visible URL to one concrete file identity.
-            self._geometry_file_token = secrets.token_urlsafe(32)
-        self._configured_geometry_identity = identity
-        self._configured_geometry_server_loaded = False
-        self._configured_mesh_stream = None
-        self._configured_mesh_stream_inspected = False
-        self._configured_mesh_warmup_key = None
+            configured.token = secrets.token_urlsafe(32)
+        configured.identity = identity
+        configured.server_loaded = False
+        configured.mesh_stream = None
+        configured.mesh_stream_inspected = False
+        configured.mesh_warmup_key = None
+        configured.server_geometry = None
+
+    def _configured_geometry_for_token_locked(
+        self, token: str
+    ) -> Optional[_ConfiguredGeometry]:
+        for configured in self._configured_geometries:
+            if not os.path.isfile(configured.path):
+                continue
+            self._refresh_configured_geometry_locked(configured)
+            if hmac.compare_digest(token, configured.token):
+                return configured
+        return None
+
+    def _configured_mesh_stream_locked(
+        self, configured: _ConfiguredGeometry
+    ) -> Optional[StreamablePlyMesh]:
+        self._refresh_configured_geometry_locked(configured)
+        if not configured.mesh_stream_inspected:
+            configured.mesh_stream = StreamablePlyMesh.inspect(configured.path)
+            configured.mesh_stream_inspected = True
+        return configured.mesh_stream
+
+    def _configured_geometry_descriptor_locked(
+        self, configured: _ConfiguredGeometry
+    ) -> Dict[str, Any]:
+        self._refresh_configured_geometry_locked(configured)
+        mesh_stream = self._configured_mesh_stream_locked(configured)
+        try:
+            kind = self._ply_loader.inspect_kind(configured.path)
+        except ValueError:
+            # The client can still inspect the fetched header and report a
+            # useful load error if the file changed after selection.
+            kind = None
+        descriptor = {
+            "name": os.path.basename(configured.path),
+            "size": os.path.getsize(configured.path),
+            "kind": kind,
+            "revision": geometry_file_revision(configured.path),
+            "token": configured.token,
+            "server_loaded": configured.server_loaded,
+        }
+        if mesh_stream and mesh_stream.face_count > mesh_stream.chunk_face_count:
+            descriptor["mesh_stream"] = mesh_stream.manifest()
+        return descriptor
+
+    def get_configured_geometry_files(self) -> List[Dict[str, Any]]:
+        """Describe configured local geometries without exposing their paths."""
+        with self._configured_geometry_lock:
+            return [
+                self._configured_geometry_descriptor_locked(configured)
+                for configured in self._configured_geometries
+                if os.path.isfile(configured.path)
+            ]
 
     def get_configured_geometry_file(self) -> Optional[Dict[str, Any]]:
-        """Describe the selected server-local geometry without exposing its path."""
+        """Return the first configured geometry for legacy API callers."""
         with self._configured_geometry_lock:
-            path = self.geometry_path
-            if not path or not os.path.isfile(path):
-                return None
-            self._refresh_configured_geometry_locked(path)
-            if not self._configured_mesh_stream_inspected:
-                self._configured_mesh_stream = StreamablePlyMesh.inspect(path)
-                self._configured_mesh_stream_inspected = True
-            try:
-                kind = self._ply_loader.inspect_kind(path)
-            except ValueError:
-                # The client can still inspect the fetched header and report a
-                # useful load error if the file changed after selection.
-                kind = None
-            descriptor = {
-                "name": os.path.basename(path),
-                "size": os.path.getsize(path),
-                "kind": kind,
-                "revision": geometry_file_revision(path),
-                "token": self._geometry_file_token,
-                "server_loaded": self._configured_geometry_server_loaded,
-            }
-            mesh_stream = self._configured_mesh_stream
-            if mesh_stream and mesh_stream.face_count > mesh_stream.chunk_face_count:
-                descriptor["mesh_stream"] = mesh_stream.manifest()
-            return descriptor
+            configured = next((
+                item for item in self._configured_geometries
+                if os.path.isfile(item.path)
+            ), None)
+            return (
+                self._configured_geometry_descriptor_locked(configured)
+                if configured else None
+            )
 
     def set_configured_geometry_file(self, path: str) -> Dict[str, Any]:
         """Select a server-local PLY for the configured streaming path."""
         resolved = self._ply_loader.resolve_path(path)
         with self._configured_geometry_lock:
             self.geometry_path = resolved
-            self._geometry_file_token = secrets.token_urlsafe(32)
-            self._configured_geometry_server_loaded = False
-            self._configured_geometry_identity = None
-            self._configured_mesh_stream = None
-            self._configured_mesh_stream_inspected = False
+            self._configured_geometries = [_ConfiguredGeometry(resolved)]
             descriptor = self.get_configured_geometry_file()
         self.start_configured_mesh_warmup()
         return descriptor
 
     def start_configured_mesh_warmup(self) -> None:
-        """Prebuild exact compressed chunks while the user opens the viewer."""
-        mesh_stream = self.get_configured_mesh_stream()
-        if (
-            mesh_stream is None
-            or mesh_stream.face_count <= mesh_stream.chunk_face_count
-        ):
-            return
-        cache_key = mesh_stream.cache_key
+        """Prebuild exact compressed chunks for all configured geometries."""
         with self._configured_geometry_lock:
-            if self._configured_mesh_warmup_key == cache_key:
-                return
-            self._configured_mesh_warmup_key = cache_key
+            configured_geometries = list(self._configured_geometries)
+        for configured in configured_geometries:
+            with self._configured_geometry_lock:
+                if not os.path.isfile(configured.path):
+                    continue
+                mesh_stream = self._configured_mesh_stream_locked(configured)
+                if (
+                    mesh_stream is None
+                    or mesh_stream.face_count <= mesh_stream.chunk_face_count
+                    or configured.mesh_warmup_key == mesh_stream.cache_key
+                ):
+                    continue
+                cache_key = mesh_stream.cache_key
+                configured.mesh_warmup_key = cache_key
 
-        def warm() -> None:
-            try:
-                mesh_stream.warm_gzip_cache()
-            except (OSError, ValueError) as error:
-                with self._configured_geometry_lock:
-                    if self._configured_mesh_warmup_key == cache_key:
-                        self._configured_mesh_warmup_key = None
-                logger.warning("Unable to warm mesh chunk cache: %s", error)
+            def warm(
+                state=configured, stream=mesh_stream, key=cache_key
+            ) -> None:
+                try:
+                    stream.warm_gzip_cache()
+                except (OSError, ValueError) as error:
+                    with self._configured_geometry_lock:
+                        if state.mesh_warmup_key == key:
+                            state.mesh_warmup_key = None
+                    logger.warning("Unable to warm mesh chunk cache: %s", error)
 
-        threading.Thread(
-            target=warm,
-            name="mesh-chunk-warmup",
-            daemon=True,
-        ).start()
+            threading.Thread(
+                target=warm,
+                name="mesh-chunk-warmup",
+                daemon=True,
+            ).start()
 
     def activate_configured_geometry(
         self, token: str, request_stream: str = "default"
     ) -> Dict[str, Any]:
-        path = self.resolve_configured_geometry_file(token)
-        if path is None:
-            raise ValueError("Configured geometry selection has changed")
-        status = self.load_external_geometry(
-            path,
-            request_stream=request_stream,
-            as_default=True,
-            configured_token=token,
+        selection_request = self._geometry_selection_requests.begin(
+            request_stream
         )
         with self._configured_geometry_lock:
-            if (
-                self.geometry_path == path
-                and hmac.compare_digest(token, self._geometry_file_token)
-            ):
-                self._configured_geometry_server_loaded = True
-        return status
+            configured = self._configured_geometry_for_token_locked(token)
+            if configured is None:
+                raise ValueError("Configured geometry selection has changed")
+            path = configured.path
+            geometry = configured.server_geometry
+        if geometry is None:
+            # Left and right panes may select the same configured file at the
+            # same time. Parse it once and share the immutable GeometryData.
+            with configured.server_load_lock:
+                with self._configured_geometry_lock:
+                    current = self._configured_geometry_for_token_locked(token)
+                    if current is not configured or current.path != path:
+                        raise ValueError(
+                            "Configured geometry selection has changed"
+                        )
+                    geometry = current.server_geometry
+                if geometry is None:
+                    loaded_geometry = self._read_external_geometry(path)
+                    with self._configured_geometry_lock:
+                        current = self._configured_geometry_for_token_locked(token)
+                        if current is not configured or current.path != path:
+                            raise ValueError(
+                                "Configured geometry selection has changed"
+                            )
+                        current.server_geometry = loaded_geometry
+                        geometry = loaded_geometry
+        self._geometry_selection_requests.commit(
+            request_stream,
+            selection_request,
+            lambda: self._geometry_store.select(request_stream, geometry),
+        )
+        with self._configured_geometry_lock:
+            configured = self._configured_geometry_for_token_locked(token)
+            if configured and configured.path == path:
+                configured.server_loaded = True
+        return self.get_geometry_status(request_stream)
 
     def resolve_configured_geometry_file(
         self, token: str, revision: Optional[str] = None
     ) -> Optional[str]:
         """Resolve selected geometry for its unguessable capability token."""
         with self._configured_geometry_lock:
-            if not self.geometry_path or not os.path.isfile(self.geometry_path):
-                return None
-            self._refresh_configured_geometry_locked(self.geometry_path)
-            if not hmac.compare_digest(token, self._geometry_file_token):
+            configured = self._configured_geometry_for_token_locked(token)
+            if configured is None:
                 return None
             if (
                 revision is not None
                 and not hmac.compare_digest(
-                    revision, geometry_file_revision(self.geometry_path)
+                    revision, geometry_file_revision(configured.path)
                 )
             ):
                 return None
-            return self.geometry_path
+            return configured.path
 
     def get_configured_mesh_stream(
         self, token: Optional[str] = None, revision: Optional[str] = None
     ) -> Optional[StreamablePlyMesh]:
-        if (
-            token is not None
-            and self.resolve_configured_geometry_file(token, revision) is None
-        ):
-            return None
-        if not self.geometry_path or not os.path.isfile(self.geometry_path):
-            return None
         with self._configured_geometry_lock:
-            self._refresh_configured_geometry_locked(self.geometry_path)
-            if not self._configured_mesh_stream_inspected:
-                self._configured_mesh_stream = StreamablePlyMesh.inspect(
-                    self.geometry_path
-                )
-                self._configured_mesh_stream_inspected = True
-            return self._configured_mesh_stream
+            if token is None:
+                configured = next((
+                    item for item in self._configured_geometries
+                    if os.path.isfile(item.path)
+                ), None)
+            else:
+                configured = self._configured_geometry_for_token_locked(token)
+                if configured and revision is not None and not hmac.compare_digest(
+                    revision, geometry_file_revision(configured.path)
+                ):
+                    configured = None
+            return (
+                self._configured_mesh_stream_locked(configured)
+                if configured else None
+            )
 
     def load(self):
         """Loads the available COLMAP data sources."""
@@ -335,6 +423,9 @@ class ColmapService:
         request_stream: str = "default",
         client_generation: Optional[int] = None,
     ) -> int:
+        # A direct upload supersedes any configured-file selection still being
+        # parsed for this pane.
+        self._geometry_selection_requests.begin(request_stream)
         return self._geometry_store.begin_upload(
             request_stream, client_generation
         )
@@ -350,6 +441,27 @@ class ColmapService:
         colmap_count = len(self.reconstruction.points3D) if self.reconstruction else 0
         return self._geometry_store.status(request_stream, colmap_count)
 
+    def _read_external_geometry(
+        self, path: str, display_name: Optional[str] = None
+    ) -> GeometryData:
+        if os.path.splitext(path)[1].lower() != ".ply":
+            raise ValueError("External geometry must be a .ply file")
+        points, colors, kind = self._ply_loader.load(path)
+        content_hash = hashlib.sha256()
+        with open(path, "rb") as geometry_file:
+            for chunk in iter(lambda: geometry_file.read(1024 * 1024), b""):
+                content_hash.update(chunk)
+        points.setflags(write=False)
+        colors.setflags(write=False)
+        return GeometryData(
+            xyz=points,
+            rgb=colors,
+            name=display_name or os.path.basename(path),
+            kind=kind,
+            revision=self._geometry_store.next_revision(),
+            cache_token=content_hash.hexdigest()[:16],
+        )
+
     def load_external_geometry(
         self,
         path: str,
@@ -359,41 +471,22 @@ class ColmapService:
         upload_token: Optional[int] = None,
         configured_token: Optional[str] = None,
     ):
-        if os.path.splitext(path)[1].lower() != ".ply":
-            raise ValueError("External geometry must be a .ply file")
         stream = self._request_stream(request_stream)
         if not as_default and upload_token is None:
             upload_token = self.begin_external_geometry_upload(stream)
         try:
             if not as_default:
                 self._geometry_store.require_current_upload(stream, upload_token)
-            points, colors, kind = self._ply_loader.load(path)
-            content_hash = hashlib.sha256()
-            with open(path, "rb") as geometry_file:
-                for chunk in iter(lambda: geometry_file.read(1024 * 1024), b""):
-                    content_hash.update(chunk)
-            points.setflags(write=False)
-            colors.setflags(write=False)
-            geometry = GeometryData(
-                xyz=points,
-                rgb=colors,
-                name=display_name or os.path.basename(path),
-                kind=kind,
-                revision=self._geometry_store.next_revision(),
-                cache_token=content_hash.hexdigest()[:16],
-            )
+            geometry = self._read_external_geometry(path, display_name)
             if as_default:
                 if configured_token is None:
                     self._geometry_store.set_default(geometry)
                 else:
                     with self._configured_geometry_lock:
-                        if (
-                            not self.geometry_path
-                            or self.geometry_path != path
-                            or not hmac.compare_digest(
-                                configured_token, self._geometry_file_token
-                            )
-                        ):
+                        configured = self._configured_geometry_for_token_locked(
+                            configured_token
+                        )
+                        if configured is None or configured.path != path:
                             raise ValueError(
                                 "Configured geometry selection has changed"
                             )
@@ -407,7 +500,14 @@ class ColmapService:
         return self.get_geometry_status(status_stream)
 
     def reset_external_geometry(self, request_stream: str = "default"):
-        self._geometry_store.reset_to_colmap(request_stream)
+        selection_request = self._geometry_selection_requests.begin(
+            request_stream
+        )
+        self._geometry_selection_requests.commit(
+            request_stream,
+            selection_request,
+            lambda: self._geometry_store.reset_to_colmap(request_stream),
+        )
         self.start_reprojection_warmup()
         return self.get_geometry_status(request_stream)
 

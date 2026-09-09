@@ -18,16 +18,22 @@ def parse_args() -> argparse.Namespace:
         "-g",
         "--geometry",
         type=str,
+        nargs="+",
         default=None,
-        help="PLY point cloud or mesh to use instead of COLMAP points3D",
+        metavar="PLY",
+        help=(
+            "one or more PLY point clouds, meshes, or Gaussian files to "
+            "preload"
+        ),
     )
     parser.add_argument("-p", "--port", type=int, default=8000)
     args = parser.parse_args()
     if args.geometry:
         try:
-            args.geometry = PlyGeometryLoader.resolve_path(
-                args.geometry, require_absolute=False
-            )
+            args.geometry = [
+                PlyGeometryLoader.resolve_path(path, require_absolute=False)
+                for path in args.geometry
+            ]
         except ValueError as error:
             parser.error(str(error))
     return args
@@ -44,7 +50,7 @@ def main() -> None:
             image_path=args.image_base_path,
             project_path=args.colmap_project_path,
             db_path=args.database_path,
-            geometry_path=args.geometry,
+            geometry_paths=args.geometry,
         )
     )
     uvicorn.run(app, host="0.0.0.0", port=args.port)

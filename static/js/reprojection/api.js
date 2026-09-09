@@ -62,10 +62,10 @@
             ));
         }
 
-        async activateConfiguredGeometry(url) {
+        async activateConfiguredGeometry(url, stream = this.getStream()) {
             const separator = url.includes("?") ? "&" : "?";
             return jsonResponse(await this.fetch(
-                `${url}${separator}${this.streamQuery()}`,
+                `${url}${separator}${this.streamQuery(stream)}`,
                 {method: "POST"}
             ));
         }

@@ -57,11 +57,12 @@ You can also use shorter aliases for the arguments:
 python main.py -i /path/to/your/images -c /path/to/your/colmap/project
 ```
 
-An external PLY can also be selected at startup. It is assumed to use the same
-world coordinate system as the COLMAP reconstruction:
+One or more external PLY files can also be loaded at startup. They are assumed
+to use the same world coordinate system as the COLMAP reconstruction:
 
 ```bash
-python main.py -i /path/to/images -c /path/to/sparse -g /path/to/geometry.ply
+python main.py -i /path/to/images -c /path/to/sparse \
+    -g /path/to/points.ply /path/to/mesh.ply /path/to/gaussians.ply
 ```
 
 ```bash
@@ -139,28 +140,34 @@ limit is available browser/GPU memory; parsing temporarily holds the source
 buffer and decoded geometry at the same time.
 
 Loaded geometry uses its filename as its source label; duplicate labels receive
-a numeric suffix. Use the pencil action in either pane's source menu to rename
-any source, including COLMAP points and the camera image. Switching sources with
-the menu or the `t`/`y` shortcuts updates both selected labels in the upper
-corners of their panes. The Comparison controls show labels continuously by
-default and can instead hide them or fade them after two seconds.
+a numeric suffix automatically. Use the pencil action in either pane's source
+menu to rename any source, including COLMAP points and the camera image. Manual
+labels may intentionally be identical because sources retain separate internal
+identities. Switching sources with the menu or the `t`/`y` shortcuts updates
+both selected labels in the upper corners of their panes. The Comparison
+controls show labels continuously by default and can instead hide them or fade
+them after two seconds.
 The left and right source menus provide rename, cycling-visibility, and info
 actions. The info action shows the source label, filename, and available path,
 with a separate copy button for each value. Browser-selected files do not
-expose their filesystem path, so only their filename is available.
+expose their filesystem path, so only their filename is available. Files
+loaded through `-g` or the server-local path control show their canonical path
+to the authorized loopback viewer.
 
 COLMAP distortion cannot be represented by a standard Three.js perspective
 camera. For distorted camera models, the viewer therefore uses its calibrated
-server renderer rather than displaying an inaccurate overlay. That fallback
-reads `x`, `y`, `z`, RGB or degree-zero `f_dc` color, and optional faces;
+server renderer rather than displaying an inaccurate overlay. Every configured
+geometry remains independently selectable in that fallback, including separate
+left and right selections. The fallback reads `x`, `y`, `z`, RGB or degree-zero
+`f_dc` color, and optional faces;
 Gaussian scale/rotation/opacity are not used, and mesh faces are sampled into
 at most five million rendered points. Because fallback files cross the HTTP
 request boundary, its existing 1 GiB upload limit still applies.
 
-Geometry provided with `--geometry` is the initial viewer selection and uses
-the same automatic point-cloud, triangle-mesh, or Gaussian rendering path as a
-dropped file. Browser access to that configured local file is restricted to
-loopback clients; remote browser connections retain the numerical fallback.
+Geometry files provided with `--geometry` are loaded in command-line order and
+use the same automatic point-cloud, triangle-mesh, or Gaussian rendering path
+as dropped files. Browser access to those configured local files is restricted
+to loopback clients; remote browser connections retain the numerical fallback.
 Very large binary little-endian triangle meshes are memory-mapped by the
 server and streamed as compact, locally indexed chunks. The browser represents
 those chunks as multiple Three.js geometries, preserving every triangle while
@@ -193,7 +200,7 @@ The following API endpoints are available:
 *   `GET /api/sources`: Returns a list of available data sources.
 *   `GET /api/capabilities`: Reports whether 3D reprojection is available.
 *   `GET /api/reprojection/images`: Lists registered reconstruction images.
-*   `GET /api/reprojection/configured-geometry`: Streams the explicit `-g` file to an authorized loopback viewer.
+*   `GET /api/reprojection/configured-geometry`: Streams a token-selected `-g` file to an authorized loopback viewer.
 *   `POST /api/reprojection/geometry`: Loads an uploaded PLY point cloud or mesh.
 *   `DELETE /api/reprojection/geometry`: Restores COLMAP `points3D`.
 *   `POST /api/reprojection/stream/heartbeat`: Keeps a viewer's geometry active.

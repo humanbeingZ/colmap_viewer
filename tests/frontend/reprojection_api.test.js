@@ -17,6 +17,9 @@ const fetchImpl = async (url, options = {}) => {
     await api.uploadGeometry({name: "cloud file.ply"}, 7, "signal");
     await api.loadLocalGeometry("/data/mesh file.ply");
     await api.activateConfiguredGeometry("/activate?token=secret");
+    await api.activateConfiguredGeometry(
+        "/activate?token=other", "viewer id:right"
+    );
     await api.resetGeometry();
     await api.resetGeometry("viewer id:right");
     await api.heartbeat();
@@ -37,17 +40,21 @@ const fetchImpl = async (url, options = {}) => {
         "/activate?token=secret&stream=viewer%20id"
     );
     assert.strictEqual(requests[3].options.method, "POST");
-    assert.strictEqual(requests[4].options.method, "DELETE");
     assert.strictEqual(
-        requests[5].url,
-        "/api/reprojection/geometry?stream=viewer%20id%3Aright"
+        requests[4].url,
+        "/activate?token=other&stream=viewer%20id%3Aright"
     );
     assert.strictEqual(requests[5].options.method, "DELETE");
-    assert.strictEqual(requests[6].options.method, "POST");
+    assert.strictEqual(
+        requests[6].url,
+        "/api/reprojection/geometry?stream=viewer%20id%3Aright"
+    );
+    assert.strictEqual(requests[6].options.method, "DELETE");
     assert.strictEqual(requests[7].options.method, "POST");
+    assert.strictEqual(requests[8].options.method, "POST");
     assert.ok(colmapPoints instanceof ArrayBuffer);
     assert.strictEqual(
-        requests[8].url,
+        requests[9].url,
         "/api/reprojection/colmap-points.ply"
     );
 

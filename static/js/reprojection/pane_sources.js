@@ -23,7 +23,8 @@
     function isPointCloud(source, loadedGeometries = []) {
         return isColmap(source) || loadedGeometries.some(
             geometry => geometry.gpuKey === source
-                && geometry.kind === "point cloud"
+                && (geometry.kind === "point cloud"
+                    || geometry.renderPath === "server")
         );
     }
 

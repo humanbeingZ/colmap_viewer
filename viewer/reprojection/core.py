@@ -25,6 +25,10 @@ class GeometryUploadSuperseded(RuntimeError):
     """Raised when a newer upload has replaced this upload request."""
 
 
+class GeometrySelectionSuperseded(RuntimeError):
+    """Raised when a newer geometry selection has replaced this request."""
+
+
 @dataclass(frozen=True)
 class GeometryData:
     xyz: np.ndarray
@@ -93,6 +97,14 @@ class SupersessionTracker:
         with self._lock:
             if request_id != self._latest.get(stream):
                 raise self._exception_type()
+
+    def commit(self, request_stream: str, request_id: int, publish: Callable):
+        """Publish only if this request is still current for its stream."""
+        stream = self._normalize_stream(request_stream)
+        with self._lock:
+            if request_id != self._latest.get(stream):
+                raise self._exception_type()
+            return publish()
 
 
 class ViewerGeometryStore:
@@ -256,6 +268,26 @@ class ViewerGeometryStore:
             self._uploaded[stream] = geometry
             self._uploaded.move_to_end(stream)
             self._colmap_streams.discard(stream)
+            self._last_seen[stream] = self._clock()
+
+    def select(self, request_stream: str, geometry: GeometryData):
+        """Select an already-loaded geometry for one viewer stream."""
+        with self._lock:
+            stream = self._touch_locked(request_stream)
+            if (
+                stream not in self._uploaded
+                and len(self._uploaded) >= self._max_uploaded
+            ):
+                raise GeometryCapacityError(
+                    "The server already has the maximum of "
+                    f"{self._max_uploaded} active geometry selections; reset "
+                    "one viewer to COLMAP points3D or wait for an idle viewer "
+                    "to expire before selecting another"
+                )
+            self._uploaded[stream] = geometry
+            self._uploaded.move_to_end(stream)
+            self._colmap_streams.discard(stream)
+            self._pending_uploads.pop(stream, None)
             self._last_seen[stream] = self._clock()
 
     def set_default(self, geometry: GeometryData):

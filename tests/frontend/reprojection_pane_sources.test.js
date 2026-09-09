@@ -18,6 +18,13 @@ assert.strictEqual(paneSources.isPointCloud("mesh", [
 assert.strictEqual(paneSources.isPointCloud("points", [
     {gpuKey: "points", kind: "point cloud"},
 ]), true);
+assert.strictEqual(paneSources.isPointCloud("server-mesh", [
+    {
+        gpuKey: "server-mesh",
+        kind: "triangle mesh",
+        renderPath: "server",
+    },
+]), true, "server fallback renders every configured geometry as points");
 assert.strictEqual(paneSources.renderPath("mesh"), "gpu");
 assert.strictEqual(paneSources.renderPath("image"), "image");
 assert.strictEqual(paneSources.renderPath("colmap", {

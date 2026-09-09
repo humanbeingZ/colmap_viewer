@@ -246,13 +246,14 @@ const reprojectionState = {
     images: [],
     datasetNamespace: "uninitialized",
     geometryCacheToken: "colmap",
+    rightServerGeometryCacheToken: "colmap",
     geometryKind: "colmap",
     loaded: false,
     currentIndex: 0,
     generation: 0,
     pointGeneration: 0,
-    colmapSelectionGeneration: 0,
-    colmapSelectionPending: false,
+    serverSelectionGeneration: 0,
+    serverSelectionPending: false,
     splitPercent: 50,
     splitAngle: 0,
     viewScale: 1,
@@ -284,7 +285,7 @@ const reprojectionState = {
     currentRenderUrl: null,
     currentRenderView: null,
     renderMode: "server",
-    configuredGeometry: null,
+    configuredGeometries: [],
     browserGeometryLoading: false,
     pointRenderedView: {scale: 1, translateX: 0, translateY: 0},
     gpuRenderedView: {scale: 1, translateX: 0, translateY: 0},
@@ -343,6 +344,15 @@ function currentReprojectionImage() {
 }
 
 function sourceRenderPath(source, image = currentReprojectionImage()) {
+    const geometry = reprojectionState.loadedGeometries.find(
+        loaded => loaded.gpuKey === source
+    );
+    if (geometry?.renderPath === "server"
+            || (geometry?.configuredGeometry
+                && image
+                && !ReprojectionGpu.isPinholeCamera(image))) {
+        return "server";
+    }
     return paneSources.renderPath(source, {
         colmapGpuReady: Boolean(reprojectionState.colmapGpuKey),
         cameraSupported: Boolean(
@@ -356,8 +366,7 @@ function sourceUsesGpu(source, image = currentReprojectionImage()) {
 }
 
 function sourceUsesServer(source, image = currentReprojectionImage()) {
-    return paneSources.isColmap(source)
-        && sourceRenderPath(source, image) === "server";
+    return sourceRenderPath(source, image) === "server";
 }
 
 function gpuGeometryKey(source) {
@@ -484,15 +493,12 @@ function renameReprojectionSource(source, requestedLabel) {
     if (!geometry && !(source in builtInReprojectionSourceLabels)) {
         return;
     }
-    const existingLabels = [
-        ...Object.entries(builtInReprojectionSourceLabels)
-            .filter(([key]) => key !== source)
-            .map(([, label]) => label),
-        ...reprojectionState.loadedGeometries
-            .filter(loaded => loaded.gpuKey !== source)
-            .map(loaded => loaded.label),
-    ];
-    const label = paneSources.uniqueLabel(requestedLabel, existingLabels);
+    const label = String(requestedLabel || "").trim();
+    if (!label) {
+        return;
+    }
+    // Labels are presentation only; stable source keys distinguish geometry.
+    // Preserve intentional duplicate names while automatic labels remain unique.
     if (geometry) {
         geometry.label = label;
     } else {
@@ -581,46 +587,62 @@ function cyclePaneSource(pane, direction = 1) {
     paneSourcePickers[pane].cycle(direction);
 }
 
-async function selectColmapForVisiblePanes(frameGeneration) {
-    const selectionGeneration = ++reprojectionState.colmapSelectionGeneration;
-    reprojectionState.colmapSelectionPending = true;
+function configuredGeometryForSource(source) {
+    return reprojectionState.loadedGeometries.find(
+        loaded => loaded.gpuKey === source
+    )?.configuredGeometry || null;
+}
+
+async function selectServerSource(source, stream) {
+    if (paneSources.isColmap(source)) {
+        return reprojectionApi.resetGeometry(stream);
+    }
+    const configuredGeometry = configuredGeometryForSource(source);
+    if (!configuredGeometry) {
+        throw new Error("The selected server geometry is unavailable");
+    }
+    return activateConfiguredServerGeometry(configuredGeometry, stream);
+}
+
+async function selectServerSourcesForVisiblePanes(frameGeneration) {
+    const selectionGeneration = ++reprojectionState.serverSelectionGeneration;
+    reprojectionState.serverSelectionPending = true;
+    const leftSource = reprojectionState.leftSource;
+    const rightSource = reprojectionState.rightSource;
+    const leftUsesServer = sourceUsesServer(leftSource);
+    const rightUsesServer = sourceUsesServer(rightSource);
     try {
-        const rightUsesColmap = sourceUsesServer(
-            reprojectionState.rightSource
-        );
-        const resets = [reprojectionApi.resetGeometry()];
-        if (rightUsesColmap) {
-            // Render supersession is isolated per pane, but geometry
-            // selection is keyed by the same server stream. Explicitly pin
-            // the right stream to COLMAP so it cannot inherit a configured
-            // external geometry default.
-            resets.push(reprojectionApi.resetGeometry(
-                rightServerRequestStream()
-            ));
-        }
-        const [geometry] = await Promise.all(resets);
-        if (selectionGeneration !== reprojectionState.colmapSelectionGeneration
+        const [leftGeometry, rightGeometry] = await Promise.all([
+            leftUsesServer
+                ? selectServerSource(leftSource, reprojectionIdentity.id)
+                : null,
+            rightUsesServer
+                ? selectServerSource(rightSource, rightServerRequestStream())
+                : null,
+        ]);
+        if (selectionGeneration !== reprojectionState.serverSelectionGeneration
                 || frameGeneration !== reprojectionState.generation) {
             return;
         }
-        if (sourceUsesServer(reprojectionState.leftSource)) {
-            applyGeometryStatus(geometry);
+        if (leftUsesServer && reprojectionState.leftSource === leftSource) {
+            applyGeometryStatus(leftGeometry);
             requestReprojectionPointLayer(frameGeneration);
         }
-        if (rightUsesColmap
-                && sourceUsesServer(reprojectionState.rightSource)) {
+        if (rightUsesServer && reprojectionState.rightSource === rightSource) {
+            reprojectionState.rightServerGeometryCacheToken =
+                rightGeometry.cache_token;
             renderReprojectionRightPaneServer(frameGeneration);
         }
     } catch (error) {
-        if (selectionGeneration === reprojectionState.colmapSelectionGeneration
+        if (selectionGeneration === reprojectionState.serverSelectionGeneration
                 && frameGeneration === reprojectionState.generation) {
             setReprojectionStatus(
-                `Failed to select COLMAP points: ${error.message}`, true
+                `Failed to select server geometry: ${error.message}`, true
             );
         }
     } finally {
-        if (selectionGeneration === reprojectionState.colmapSelectionGeneration) {
-            reprojectionState.colmapSelectionPending = false;
+        if (selectionGeneration === reprojectionState.serverSelectionGeneration) {
+            reprojectionState.serverSelectionPending = false;
         }
     }
 }
@@ -743,7 +765,7 @@ function refreshReprojectionPanes() {
         refreshReprojectionInputVisibility();
     }
     if (sourceUsesServer(leftSource) || sourceUsesServer(rightSource)) {
-        selectColmapForVisiblePanes(generation);
+        selectServerSourcesForVisiblePanes(generation);
     }
 }
 
@@ -975,7 +997,8 @@ async function renderReprojectionRightPane(generation) {
 }
 
 function renderReprojectionRightPaneServer(generation) {
-    if (!sourceUsesServer(reprojectionState.rightSource)) {
+    const rightSource = reprojectionState.rightSource;
+    if (!sourceUsesServer(rightSource)) {
         return;
     }
     const image = reprojectionState.images[reprojectionState.currentIndex];
@@ -987,20 +1010,21 @@ function renderReprojectionRightPaneServer(generation) {
     const requestStream = rightServerRequestStream();
     const urls = reprojectionUrls(
         image, requestStream, currentPreviewMaxSize(), renderedView,
-        null
+        reprojectionState.rightServerGeometryCacheToken
     );
     const preload = new Image();
     preload.onload = () => {
         if (generation !== reprojectionState.generation
                 || !rightServerFrameRequests.isCurrent(request)
-                || !sourceUsesServer(reprojectionState.rightSource)) {
+                || reprojectionState.rightSource !== rightSource
+                || !sourceUsesServer(rightSource)) {
             return;
         }
         const inputElement = activeReprojectionInput();
         reprojectionState.rightRenderedView = {...renderedView};
-        reprojectionState.rightRenderedSource = "colmap";
+        reprojectionState.rightRenderedSource = rightSource;
         inputElement.src = urls.render;
-        commitRightPanePresentation("colmap", "independent");
+        commitRightPanePresentation(rightSource, "independent");
         inputElement.style.visibility = "";
         applyRightPaneCaptureTransform(inputElement);
     };
@@ -1169,7 +1193,10 @@ async function initializeReprojectionCapability() {
         reprojectionState.datasetNamespace = capabilities.dataset_namespace;
         reprojectionState.maxRenderSize = capabilities.max_reprojection_size;
         reprojectionState.maxInputSize = capabilities.max_input_size || 4096;
-        reprojectionState.configuredGeometry = capabilities.configured_geometry;
+        reprojectionState.configuredGeometries =
+            capabilities.configured_geometries
+            || (capabilities.configured_geometry
+                ? [capabilities.configured_geometry] : []);
         applyGeometryStatus(capabilities.geometry);
         if (!capabilities.reprojection) {
             const option = viewerModeSelect.querySelector('option[value="reprojection"]');
@@ -1242,16 +1269,22 @@ async function loadReprojectionImages() {
 }
 
 async function loadConfiguredGeometryForReprojection() {
-    const configuredGeometry = reprojectionState.configuredGeometry;
-    if (!configuredGeometry) {
+    const configuredGeometries = reprojectionState.configuredGeometries;
+    if (!configuredGeometries.length) {
         return;
     }
     try {
-        const result = await loadConfiguredReprojectionGeometry(
-            configuredGeometry
-        );
-        if (result !== configuredGeometryLoadResult.loaded
-                && reprojectionState.renderMode === "server") {
+        let loadFailed = false;
+        for (const configuredGeometry of configuredGeometries) {
+            const result = await loadConfiguredReprojectionGeometry(
+                configuredGeometry
+            );
+            loadFailed ||= result !== configuredGeometryLoadResult.loaded;
+        }
+        if (sourceUsesServer(reprojectionState.leftSource)) {
+            refreshReprojectionPanes();
+        }
+        if (loadFailed && reprojectionState.renderMode === "server") {
             requestReprojectionPointLayer(reprojectionState.generation);
         }
     } catch (error) {
@@ -2310,10 +2343,7 @@ async function loadConfiguredReprojectionGeometryNow(
         return configuredGeometryLoadResult.deferred;
     }
     if (!ReprojectionGpu.isPinholeCamera(image)) {
-        const activated = await activateConfiguredServerGeometry(
-            configuredGeometry, isCurrent
-        );
-        return activated
+        return registerConfiguredServerGeometry(configuredGeometry)
             ? configuredGeometryLoadResult.loaded
             : configuredGeometryLoadResult.failed;
     }
@@ -2328,34 +2358,62 @@ async function loadConfiguredReprojectionGeometryNow(
         configuredBrowserGeometryLoader(configuredGeometry, image),
         sourceId,
         "configured",
-        configuredGeometry.path || null
+        configuredGeometry.path || null,
+        configuredGeometry
     );
     return installed
         ? configuredGeometryLoadResult.loaded
         : configuredGeometryLoadResult.failed;
 }
 
-async function activateConfiguredServerGeometry(
-    configuredGeometry, isCurrent = () => true
-) {
+function registerConfiguredServerGeometry(configuredGeometry) {
+    const sourceId = configuredGeometry.url;
+    const existing = reprojectionState.loadedGeometries.find(
+        geometry => geometry.sourceId === sourceId
+    );
+    if (existing) {
+        reprojectionState.leftSource = existing.gpuKey;
+        return true;
+    }
+    const source = `server:${sourceId}`;
+    const label = paneSources.uniqueLabel(
+        configuredGeometry.name,
+        [
+            ...Object.values(builtInReprojectionSourceLabels),
+            ...reprojectionState.loadedGeometries.map(loaded => loaded.label),
+        ]
+    );
+    reprojectionState.loadedGeometries.push({
+        gpuKey: source,
+        sourceId,
+        name: configuredGeometry.name,
+        label,
+        filename: configuredGeometry.name,
+        path: configuredGeometry.path || null,
+        kind: configuredGeometry.kind || "point cloud",
+        count: 0,
+        hiddenByDefault: false,
+        renderPath: "server",
+        configuredGeometry,
+    });
+    reprojectionState.leftSource = source;
+    reprojectionState.renderMode = "server";
+    rebuildPaneSourceOptions();
+    reprojectionLeftSource.value = source;
+    paneSourcePickers.left.sync();
+    showReprojectionSourceBadges();
+    return true;
+}
+
+async function activateConfiguredServerGeometry(configuredGeometry, requestStream) {
     setReprojectionStatus(
         `Preparing ${configuredGeometry.name} for server rendering…`
     );
-    if (!configuredGeometry.server_loaded) {
-        const geometryStatus = await reprojectionApi.activateConfiguredGeometry(
-            configuredGeometry.activate_url
-        );
-        if (!isCurrent()) {
-            return false;
-        }
-        configuredGeometry.server_loaded = true;
-        applyGeometryStatus(geometryStatus);
-    }
-    reprojectionState.renderMode = "server";
-    if (reprojectionState.loaded) {
-        requestReprojectionPointLayer(reprojectionState.generation);
-    }
-    return true;
+    const geometryStatus = await reprojectionApi.activateConfiguredGeometry(
+        configuredGeometry.activate_url, requestStream
+    );
+    configuredGeometry.server_loaded = true;
+    return geometryStatus;
 }
 
 function configuredBrowserGeometryLoader(configuredGeometry, image) {
@@ -2399,7 +2457,7 @@ async function loadLocalReprojectionGeometry() {
                 return configuredGeometryLoadResult.failed;
             }
             configuredGeometry.path = path;
-            reprojectionState.configuredGeometry = configuredGeometry;
+            reprojectionState.configuredGeometries = [configuredGeometry];
             if (!reprojectionState.images.length) {
                 setReprojectionStatus(
                     `${configuredGeometry.name} selected; `
@@ -2407,9 +2465,14 @@ async function loadLocalReprojectionGeometry() {
                 );
                 return configuredGeometryLoadResult.deferred;
             }
-            return loadConfiguredReprojectionGeometryNow(
+            const result = await loadConfiguredReprojectionGeometryNow(
                 configuredGeometry, isCurrent
             );
+            if (result === configuredGeometryLoadResult.loaded
+                    && sourceUsesServer(reprojectionState.leftSource)) {
+                refreshReprojectionPanes();
+            }
+            return result;
         });
     } catch (error) {
         setReprojectionStatus(
@@ -2422,7 +2485,8 @@ async function loadLocalReprojectionGeometry() {
 }
 
 async function installBrowserGeometry(
-    name, loadGeometry, sourceId = null, owner = "direct", sourcePath = null
+    name, loadGeometry, sourceId = null, owner = "direct", sourcePath = null,
+    configuredGeometry = null
 ) {
     const renderer = getReprojectionGpuRenderer();
 
@@ -2498,6 +2562,7 @@ async function installBrowserGeometry(
                 kind: representation.kind,
                 count: representation.count,
                 hiddenByDefault: Boolean(representation.hiddenByDefault),
+                configuredGeometry,
             });
         });
         reprojectionState.leftSource = geometry.key;
@@ -2888,7 +2953,7 @@ function loadReprojectionFrame(index) {
     const image = reprojectionState.images[reprojectionState.currentIndex];
     const nextLeftPath = sourceRenderPath(reprojectionState.leftSource, image);
     const nextRightPath = sourceRenderPath(reprojectionState.rightSource, image);
-    const colmapServerRouteChanged =
+    const serverRouteChanged =
         (previousLeftPath !== nextLeftPath
             || previousRightPath !== nextRightPath)
         && (sourceUsesServer(reprojectionState.leftSource, image)
@@ -2946,15 +3011,15 @@ function loadReprojectionFrame(index) {
                 renderReprojectionGpuFrame(generation);
             } else {
                 reprojectionState.renderMode = "server";
-                if (colmapServerRouteChanged) {
-                    await selectColmapForVisiblePanes(generation);
+                if (serverRouteChanged) {
+                    await selectServerSourcesForVisiblePanes(generation);
                 } else {
                     requestReprojectionPointLayer(generation);
                 }
                 const rightSource = reprojectionState.rightSource;
                 if (sourceUsesGpu(rightSource, image)) {
                     renderReprojectionRightPane(generation);
-                } else if (!colmapServerRouteChanged
+                } else if (!serverRouteChanged
                         && sourceUsesServer(rightSource, image)) {
                     renderReprojectionRightPaneServer(generation);
                 }
@@ -3161,7 +3226,7 @@ function setReprojectionPointSize(value) {
                     reprojectionState.leftSource,
                     reprojectionState.loadedGeometries
                 )
-                && !reprojectionState.colmapSelectionPending) {
+                && !reprojectionState.serverSelectionPending) {
             requestReprojectionPointLayer(generation);
         }
         if (sourceUsesServer(reprojectionState.rightSource)) {
@@ -3477,7 +3542,7 @@ heartbeatReprojectionStream();
 
 const reprojectionCapabilityReady = initializeReprojectionCapability();
 reprojectionCapabilityReady.then(async () => {
-    if (reprojectionState.configuredGeometry) {
+    if (reprojectionState.configuredGeometries.length) {
         // Preserve startup responsiveness for the default matching viewer.
         // Server-side mesh preparation is already running independently.
         await globalThis.matchingInitialViewReady?.catch(() => {});

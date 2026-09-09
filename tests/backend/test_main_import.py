@@ -13,6 +13,7 @@ from starlette.requests import Request
 from viewer.app import (
     _accepts_content_encoding,
     _configured_geometry_descriptor,
+    _configured_geometry_descriptors,
     get_configured_mesh_chunk,
     get_reprojection_colmap_points,
     _is_loopback_request,
@@ -50,8 +51,22 @@ class _FakeDescriptorService:
             "mesh_stream": {"chunk_count": 2},
         }
 
+    def get_configured_geometry_files(self):
+        return [
+            self.get_configured_geometry_file(),
+            {
+                "name": "points.ply",
+                "token": "other-secret",
+                "revision": "def456",
+            },
+        ]
+
     def start_configured_mesh_warmup(self):
         self.warmed = True
+
+    @staticmethod
+    def resolve_configured_geometry_file(token, revision):
+        return f"/data/{token}/{revision}.ply"
 
 
 class _FakeColmapPointsService:
@@ -180,6 +195,21 @@ class MainImportTest(unittest.TestCase):
             descriptor["mesh_stream"]["chunk_url"],
             "/api/reprojection/configured-mesh-chunks/"
             "{chunk_index}?token=secret&version=abc123",
+        )
+        self.assertEqual(descriptor["path"], "/data/secret/abc123.ply")
+        self.assertTrue(service.warmed)
+
+    def test_all_configured_geometries_receive_independent_urls(self):
+        service = _FakeDescriptorService()
+        with patch("viewer.app.colmap_service", service, create=True):
+            descriptors = _configured_geometry_descriptors()
+
+        self.assertEqual(len(descriptors), 2)
+        self.assertIn("token=secret", descriptors[0]["url"])
+        self.assertIn("token=other-secret", descriptors[1]["url"])
+        self.assertEqual(descriptors[0]["path"], "/data/secret/abc123.ply")
+        self.assertEqual(
+            descriptors[1]["path"], "/data/other-secret/def456.ply"
         )
         self.assertTrue(service.warmed)
 

@@ -46,6 +46,12 @@ assert.deepStrictEqual(picker.visibleValues(), ["image", "mesh"]);
 
 assert.strictEqual(picker.renameValue("mesh", "  baseline  "), true);
 assert.deepStrictEqual(renamed, {value: "mesh", label: "baseline"});
+assert.strictEqual(picker.renameValue("mesh", "image"), true);
+assert.deepStrictEqual(
+    renamed,
+    {value: "mesh", label: "image"},
+    "manual labels are preserved even when another source uses the same label"
+);
 assert.strictEqual(picker.renameValue("mesh", "   "), false);
 assert.deepStrictEqual(picker.infoForValue("mesh", "fallback"), {
     label: "mesh label",

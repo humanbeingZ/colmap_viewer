@@ -11,6 +11,12 @@ from viewer.reprojection.core import GeometryData
 MINIMAL_ASCII_PLY = (
     b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"
 )
+LOADABLE_ASCII_PLY = (
+    b"ply\nformat ascii 1.0\nelement vertex 1\n"
+    b"property float x\nproperty float y\nproperty float z\n"
+    b"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+    b"end_header\n0 0 1 255 255 255\n"
+)
 GAUSSIAN_ASCII_PLY = (
     b"ply\nformat ascii 1.0\nelement vertex 0\n"
     + b"".join(
@@ -196,7 +202,7 @@ class ReprojectionMetadataTest(unittest.TestCase):
             geometry_file.write(MINIMAL_ASCII_PLY)
             geometry_file.flush()
             service = ColmapService("", geometry_path=geometry_file.name)
-            old_token = service._geometry_file_token
+            old_token = service.get_configured_geometry_file()["token"]
 
             descriptor = service.set_configured_geometry_file(
                 geometry_file.name
@@ -214,6 +220,76 @@ class ReprojectionMetadataTest(unittest.TestCase):
                 geometry_file.name,
             )
 
+    def test_multiple_configured_geometries_have_independent_capabilities(self):
+        with (
+            tempfile.NamedTemporaryFile(suffix=".ply") as first_file,
+            tempfile.NamedTemporaryFile(suffix=".ply") as second_file,
+        ):
+            for geometry_file in (first_file, second_file):
+                geometry_file.write(LOADABLE_ASCII_PLY)
+                geometry_file.flush()
+            service = ColmapService(
+                "", geometry_paths=[first_file.name, second_file.name]
+            )
+
+            descriptors = service.get_configured_geometry_files()
+
+            self.assertEqual(
+                [descriptor["name"] for descriptor in descriptors],
+                [
+                    os.path.basename(first_file.name),
+                    os.path.basename(second_file.name),
+                ],
+            )
+            self.assertNotEqual(descriptors[0]["token"], descriptors[1]["token"])
+            self.assertEqual(
+                service.resolve_configured_geometry_file(
+                    descriptors[0]["token"]
+                ),
+                first_file.name,
+            )
+            self.assertEqual(
+                service.resolve_configured_geometry_file(
+                    descriptors[1]["token"]
+                ),
+                second_file.name,
+            )
+            service.activate_configured_geometry(
+                descriptors[0]["token"], "viewer:left"
+            )
+            service.activate_configured_geometry(
+                descriptors[1]["token"], "viewer:right"
+            )
+            self.assertEqual(
+                service.get_geometry_status("viewer:left")["name"],
+                os.path.basename(first_file.name),
+            )
+            self.assertEqual(
+                service.get_geometry_status("viewer:right")["name"],
+                os.path.basename(second_file.name),
+            )
+            service.activate_configured_geometry(
+                descriptors[1]["token"], "viewer:left"
+            )
+            service.activate_configured_geometry(
+                descriptors[0]["token"], "viewer:left"
+            )
+            self.assertEqual(
+                service.get_geometry_status("viewer:left")["name"],
+                os.path.basename(first_file.name),
+            )
+            self.assertEqual(
+                service.get_geometry_status("viewer:right")["name"],
+                os.path.basename(second_file.name),
+            )
+            self.assertEqual(
+                [
+                    descriptor["server_loaded"]
+                    for descriptor in service.get_configured_geometry_files()
+                ],
+                [True, True],
+            )
+
     def test_configured_geometry_can_be_activated_for_server_rendering(self):
         with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:
             geometry_file.write(MINIMAL_ASCII_PLY)
@@ -221,25 +297,30 @@ class ReprojectionMetadataTest(unittest.TestCase):
             service = ColmapService("", geometry_path=geometry_file.name)
             descriptor = service.get_configured_geometry_file()
 
+            server_geometry = GeometryData(
+                xyz=np.zeros((1, 3), dtype=np.float32),
+                rgb=np.zeros((1, 3), dtype=np.uint8),
+                name="mesh",
+                kind="triangle mesh",
+                revision=1,
+                cache_token="mesh",
+            )
             with patch.object(
-                service,
-                "load_external_geometry",
-                return_value={"kind": "triangle mesh"},
+                service, "_read_external_geometry", return_value=server_geometry
             ) as load_geometry:
                 status = service.activate_configured_geometry(
                     descriptor["token"], "viewer"
                 )
+                right_status = service.activate_configured_geometry(
+                    descriptor["token"], "viewer:right"
+                )
 
             self.assertEqual(status["kind"], "triangle mesh")
+            self.assertEqual(right_status["cache_token"], "mesh")
             self.assertTrue(
                 service.get_configured_geometry_file()["server_loaded"]
             )
-            load_geometry.assert_called_once_with(
-                geometry_file.name,
-                request_stream="viewer",
-                as_default=True,
-                configured_token=descriptor["token"],
-            )
+            load_geometry.assert_called_once_with(geometry_file.name)
 
     def test_configured_geometry_is_not_eagerly_sampled_as_default(self):
         with tempfile.NamedTemporaryFile(suffix=".ply") as geometry_file:

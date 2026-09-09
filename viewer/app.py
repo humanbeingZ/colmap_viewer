@@ -22,6 +22,7 @@ from PIL import Image, ImageOps
 from .colmap_service import ColmapService
 from .reprojection.core import (
     GeometryCapacityError,
+    GeometrySelectionSuperseded,
     GeometryUploadSuperseded,
     InputSuperseded,
     RenderSuperseded,
@@ -196,12 +197,20 @@ async def get_sources():
     return colmap_service.get_available_sources()
 
 
-def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
-    configured_geometry = colmap_service.get_configured_geometry_file()
-    if not configured_geometry:
-        return None
+def _configured_geometry_urls(
+    configured_geometry: Dict[str, Any], expose_path: bool = False
+) -> Dict[str, Any]:
+    configured_geometry = dict(configured_geometry)
+    if "mesh_stream" in configured_geometry:
+        configured_geometry["mesh_stream"] = dict(
+            configured_geometry["mesh_stream"]
+        )
     token = configured_geometry.pop("token")
     revision = configured_geometry["revision"]
+    if expose_path:
+        path = colmap_service.resolve_configured_geometry_file(token, revision)
+        if path is not None:
+            configured_geometry["path"] = path
     configured_geometry["url"] = (
         "/api/reprojection/configured-geometry"
         f"?token={token}&version={revision}"
@@ -215,8 +224,26 @@ def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
             "/api/reprojection/configured-mesh-chunks/"
             f"{{chunk_index}}?token={token}&version={revision}"
         )
-    colmap_service.start_configured_mesh_warmup()
     return configured_geometry
+
+
+def _configured_geometry_descriptors() -> List[Dict[str, Any]]:
+    configured_geometries = colmap_service.get_configured_geometry_files()
+    result = [
+        _configured_geometry_urls(configured, expose_path=True)
+        for configured in configured_geometries
+    ]
+    colmap_service.start_configured_mesh_warmup()
+    return result
+
+
+def _configured_geometry_descriptor() -> Optional[Dict[str, Any]]:
+    """Return the first descriptor for compatibility with local selection."""
+    configured_geometry = colmap_service.get_configured_geometry_file()
+    if not configured_geometry:
+        return None
+    colmap_service.start_configured_mesh_warmup()
+    return _configured_geometry_urls(configured_geometry, expose_path=True)
 
 
 @app.get("/api/capabilities")
@@ -224,10 +251,10 @@ async def get_capabilities(request: Request, stream: str = "default"):
     available = colmap_service.has_reprojection_data()
     if available:
         colmap_service.start_reprojection_warmup()
-    configured_geometry = None
+    configured_geometries = []
     if _is_loopback_request(request):
-        configured_geometry = await run_in_threadpool(
-            _configured_geometry_descriptor
+        configured_geometries = await run_in_threadpool(
+            _configured_geometry_descriptors
         )
     return {
         "reprojection": available,
@@ -235,7 +262,10 @@ async def get_capabilities(request: Request, stream: str = "default"):
         "max_reprojection_size": colmap_service.MAX_REPROJECTION_SIZE,
         "max_input_size": colmap_service.MAX_INPUT_SIZE,
         "geometry": colmap_service.get_geometry_status(stream),
-        "configured_geometry": configured_geometry,
+        "configured_geometry": (
+            configured_geometries[0] if configured_geometries else None
+        ),
+        "configured_geometries": configured_geometries,
     }
 
 
@@ -269,7 +299,11 @@ async def activate_configured_reprojection_geometry(
         return await run_in_threadpool(
             colmap_service.activate_configured_geometry, token, stream
         )
-    except ValueError as exc:
+    except (
+        ValueError,
+        GeometryCapacityError,
+        GeometrySelectionSuperseded,
+    ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
