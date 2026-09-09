@@ -2,11 +2,12 @@
     "use strict";
 
     class ReprojectionSourcePicker {
-        constructor({select, picker, cycleIndex, onSelect}) {
+        constructor({select, picker, cycleIndex, onSelect, onRename = null}) {
             this.select = select;
             this.picker = picker;
             this.cycleIndex = cycleIndex;
             this.onSelect = onSelect;
+            this.onRename = onRename;
             this.hiddenSources = new Set();
             this.knownSources = new Set();
             this.trigger = picker.querySelector(".reprojection-source-trigger");
@@ -81,6 +82,15 @@
             this.trigger.focus();
         }
 
+        renameValue(value, label) {
+            const normalized = String(label || "").trim();
+            if (!normalized || !this.onRename) {
+                return false;
+            }
+            this.onRename(value, normalized);
+            return true;
+        }
+
         registerSources(optionValues, defaultHiddenSources = new Set()) {
             for (const value of optionValues) {
                 if (!this.knownSources.has(value)
@@ -119,12 +129,70 @@
                 choice.type = "button";
                 choice.className = "reprojection-source-choice";
                 choice.textContent = option.textContent;
-                choice.title = option.textContent;
+                choice.title = option.title || option.textContent;
                 choice.setAttribute("role", "menuitemradio");
                 choice.setAttribute("aria-checked", String(selectedOption));
                 choice.addEventListener(
                     "click", () => this.selectValue(option.value, true)
                 );
+
+                const labelInput = document.createElement("input");
+                labelInput.type = "text";
+                labelInput.className = "reprojection-source-label-input";
+                labelInput.value = option.textContent;
+                labelInput.setAttribute(
+                    "aria-label", `Rename ${option.textContent}`
+                );
+                labelInput.hidden = true;
+
+                const edit = document.createElement("button");
+                edit.type = "button";
+                edit.className = "reprojection-source-edit";
+                edit.textContent = "✎";
+                edit.title = `Rename ${option.textContent}`;
+                edit.setAttribute("aria-label", edit.title);
+                const renamable = Boolean(this.onRename)
+                    && option.dataset?.renamable === "true";
+                edit.hidden = !renamable;
+                const beginRename = () => {
+                    choice.hidden = true;
+                    labelInput.hidden = false;
+                    labelInput.focus();
+                    labelInput.select();
+                };
+                const finishRename = commit => {
+                    if (labelInput.hidden) {
+                        return;
+                    }
+                    const requestedLabel = labelInput.value;
+                    labelInput.hidden = true;
+                    choice.hidden = false;
+                    if (commit && this.renameValue(
+                        option.value, requestedLabel
+                    )) {
+                        return;
+                    }
+                    labelInput.value = option.textContent;
+                    this.trigger.focus();
+                };
+                edit.addEventListener("click", event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    beginRename();
+                });
+                labelInput.addEventListener("click", event => {
+                    event.stopPropagation();
+                });
+                labelInput.addEventListener("keydown", event => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        finishRename(true);
+                    } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        finishRename(false);
+                    }
+                });
+                labelInput.addEventListener("blur", () => finishRename(true));
 
                 const eye = document.createElement("button");
                 eye.type = "button";
@@ -141,7 +209,7 @@
                     event.stopPropagation();
                     this.toggleVisibility(option, hidden);
                 });
-                row.append(choice, eye);
+                row.append(choice, labelInput, edit, eye);
                 this.menu.appendChild(row);
             }
         }

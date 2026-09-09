@@ -119,7 +119,7 @@
                                 </div>
                                 <select id="reprojection-left-source" hidden
                                         aria-hidden="true" tabindex="-1">
-                                    <option value="colmap">COLMAP points</option>
+                                    <option value="colmap" data-renamable="true">COLMAP points</option>
                                 </select>
                             </div>
                             <div class="reprojection-field">
@@ -140,8 +140,8 @@
                                 </div>
                                 <select id="reprojection-right-source" hidden
                                         aria-hidden="true" tabindex="-1">
-                                    <option value="image">Camera image</option>
-                                    <option value="colmap">COLMAP points</option>
+                                    <option value="image" data-renamable="true">Camera image</option>
+                                    <option value="colmap" data-renamable="true">COLMAP points</option>
                                 </select>
                             </div>
                         </div>
@@ -323,25 +323,45 @@
             <div id="reprojection-split" class="reprojection-split">
                 <canvas id="reprojection-gpu-fallback"
                         class="reprojection-gpu reprojection-gpu-fallback"></canvas>
+                <div id="reprojection-left-geometry-layer"
+                        class="reprojection-captured-layer reprojection-left-geometry-layer">
+                    <canvas id="reprojection-left-geometry"
+                            class="reprojection-captured-geometry reprojection-left-geometry"></canvas>
+                </div>
                 <canvas id="reprojection-gpu" class="reprojection-gpu"></canvas>
                 <canvas id="reprojection-gaussian"
                         class="reprojection-gpu reprojection-gaussian"></canvas>
                 <img id="reprojection-cloud" alt="Geometrically projected 3D points">
-                <div id="reprojection-input-layer" class="reprojection-input-layer">
+                <div id="reprojection-right-geometry-layer"
+                        class="reprojection-captured-layer reprojection-right-geometry-layer">
                     <canvas id="reprojection-right-geometry"
-                            class="reprojection-right-geometry"></canvas>
+                            class="reprojection-captured-geometry reprojection-right-geometry"></canvas>
+                </div>
+                <div id="reprojection-input-layer" class="reprojection-input-layer">
                     <img id="reprojection-input" class="reprojection-input" alt="Input image">
                 </div>
                 <div id="reprojection-divider" class="reprojection-divider"></div>
+                <div class="reprojection-source-badge reprojection-source-badge-left"
+                     data-reprojection-source-badge="left" role="status"
+                     aria-live="polite"></div>
+                <div class="reprojection-source-badge reprojection-source-badge-right"
+                     data-reprojection-source-badge="right" role="status"
+                     aria-live="polite"></div>
             </div>
             <div id="reprojection-side" class="reprojection-side" hidden>
                 <div class="reprojection-pane">
                     <img id="reprojection-cloud-side" alt="Geometrically projected 3D points">
+                    <div class="reprojection-source-badge reprojection-source-badge-left"
+                         data-reprojection-source-badge="left" role="status"
+                         aria-live="polite"></div>
                 </div>
                 <div class="reprojection-pane">
                     <canvas id="reprojection-right-geometry-side"
-                            class="reprojection-right-geometry"></canvas>
+                            class="reprojection-captured-geometry reprojection-right-geometry"></canvas>
                     <img id="reprojection-input-side" class="reprojection-input" alt="Input image">
+                    <div class="reprojection-source-badge reprojection-source-badge-right"
+                         data-reprojection-source-badge="right" role="status"
+                         aria-live="polite"></div>
                 </div>
             </div>
         </div>
@@ -355,8 +375,8 @@
     <script src="/static/js/shared/viewer_stream.js"></script>
     <script src="/static/js/reprojection/api.js"></script>
     <script src="/static/js/reprojection/split.js"></script>
-    <script src="/static/js/reprojection/pane_sources.js"></script>
-    <script src="/static/js/reprojection/source_picker.js"></script>
+    <script src="/static/js/reprojection/pane_sources.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/reprojection/source_picker.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/reprojection/latest_task.js"></script>
     <script src="/static/js/reprojection/clipping_scroll.js"></script>
     <script src="/static/js/reprojection/point_size.js"></script>

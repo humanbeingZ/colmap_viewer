@@ -19,19 +19,21 @@
         return currentCanvasActive ? "keep" : "disable";
     }
 
-    function leftFrameReusable(sourceAlreadyVisible, frameIsComposited) {
-        return sourceAlreadyVisible && !frameIsComposited;
-    }
-
     function rightPresentationMode({
         selectedSource,
         renderedSource,
+        renderedMode = "independent",
         leftSelectedSource,
         leftRenderedSource,
         selectedIsGpu,
         leftIsGpu,
         sharesLeftSurface,
     }) {
+        const hasIndependentFrame = selectedSource === renderedSource
+            && renderedMode === "independent";
+        if (hasIndependentFrame) {
+            return "independent";
+        }
         const canShareLeft = sharesLeftSurface
             && leftIsGpu
             && selectedIsGpu
@@ -40,7 +42,40 @@
         if (canShareLeft) {
             return "same";
         }
-        return selectedSource === renderedSource ? "independent" : "retain";
+        return "retain";
+    }
+
+    function shouldRenderRightOnly({
+        rightIsGpu,
+        leftSelectedSource,
+        leftPresentedSource,
+        leftPresentationActive,
+        rightSourcePending,
+    }) {
+        return rightIsGpu
+            && leftPresentationActive
+            && leftPresentedSource === leftSelectedSource
+            && rightSourcePending;
+    }
+
+    function createCapturedPresentation(
+        canvas, layer, backgroundHosts = [layer]
+    ) {
+        const hosts = [...new Set(backgroundHosts)];
+        const setBackground = (background = "") => {
+            for (const host of hosts) {
+                host.style.background = background;
+            }
+        };
+        return {
+            holdBackground: setBackground,
+            setActive(active) {
+                // Background overrides belong only to transition holds.
+                setBackground();
+                canvas.classList.toggle("active", active);
+                layer.classList.toggle("capture-active", active);
+            },
+        };
     }
 
     function waitForPresentation(
@@ -53,9 +88,10 @@
 
     const api = {
         canvasForEngine,
-        leftFrameReusable,
+        createCapturedPresentation,
         needsLiveOutgoingCanvas,
         rightPresentationMode,
+        shouldRenderRightOnly,
         sourceTransition,
         waitForPresentation,
     };

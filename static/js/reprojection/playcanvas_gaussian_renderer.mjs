@@ -8,11 +8,14 @@ import {
     FILLMODE_NONE,
     GSPLAT_RENDERER_RASTER_GPU_SORT,
     Mat4,
+    PIXELFORMAT_RGBA8,
     Quat,
+    RenderTarget,
     RESOLUTION_FIXED,
     SHADERLANGUAGE_GLSL,
     SHADERLANGUAGE_WGSL,
     ShaderChunks,
+    Texture,
     Vec3,
     Vec4,
     createGraphicsDevice,
@@ -76,6 +79,38 @@ export function playCanvasCameraWorldData(camFromWorld) {
 
 export function shouldReorderGaussianData(device) {
     return !device.isWebGPU;
+}
+
+export function flipRgbaRows(pixels, width, height) {
+    const rowBytes = width * 4;
+    const flipped = new Uint8ClampedArray(rowBytes * height);
+    const source = new Uint8Array(
+        pixels.buffer, pixels.byteOffset, pixels.byteLength
+    );
+    for (let row = 0; row < height; row += 1) {
+        const sourceOffset = (height - 1 - row) * rowBytes;
+        flipped.set(
+            source.subarray(sourceOffset, sourceOffset + rowBytes),
+            row * rowBytes
+        );
+    }
+    return flipped;
+}
+
+export function unpremultiplyRgba(pixels) {
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+        const alpha = pixels[offset + 3];
+        if (alpha === 0) {
+            pixels[offset] = 0;
+            pixels[offset + 1] = 0;
+            pixels[offset + 2] = 0;
+        } else if (alpha < 255) {
+            pixels[offset] = Math.round(pixels[offset] * 255 / alpha);
+            pixels[offset + 1] = Math.round(pixels[offset + 1] * 255 / alpha);
+            pixels[offset + 2] = Math.round(pixels[offset + 2] * 255 / alpha);
+        }
+    }
+    return pixels;
 }
 
 const SH_C0 = 0.28209479177387814;
@@ -161,6 +196,8 @@ export class PlayCanvasGaussianRenderer {
         // compensation, 0.3 dilation). Callers opt into Mip-Splatting AA.
         this.splatFilter = {...DEFAULT_GAUSSIAN_SPLAT_FILTER};
         this.kernelUniformSupported = false;
+        this.kernelChunks = new Map();
+        this.captureTarget = null;
         this.destroyed = false;
         this.ready = this.initialize();
     }
@@ -233,6 +270,7 @@ export class PlayCanvasGaussianRenderer {
             const patched = patch.declaration
                 + source.replace(DILATION_LITERAL, patch.replacement);
             material.getShaderChunks(language).set("gsplatCornerVS", patched);
+            this.kernelChunks.set(language, patched);
             this.kernelUniformSupported = true;
         }
         material.update();
@@ -244,11 +282,25 @@ export class PlayCanvasGaussianRenderer {
         }
         const params = this.app.scene.gsplat;
         params.antiAlias = this.splatFilter.antiAlias;
-        if (this.kernelUniformSupported) {
-            params.material.setParameter("kernelSize", this.splatFilter.kernelSize);
+        this._applySplatFilterToMaterial(params.material);
+        for (const entry of this.entries.values()) {
+            this._applySplatFilterToMaterial(entry.entity.gsplat.material);
         }
-        params.material.update();
         this.app.renderNextFrame = true;
+    }
+
+    _applySplatFilterToMaterial(material) {
+        if (!material) {
+            return;
+        }
+        material.setDefine("GSPLAT_AA", this.splatFilter.antiAlias);
+        for (const [language, source] of this.kernelChunks) {
+            material.getShaderChunks(language).set("gsplatCornerVS", source);
+        }
+        if (this.kernelUniformSupported) {
+            material.setParameter("kernelSize", this.splatFilter.kernelSize);
+        }
+        material.update();
     }
 
     // antiAlias toggles Mip-Splatting opacity compensation; kernelSize sets the
@@ -290,8 +342,9 @@ export class PlayCanvasGaussianRenderer {
         }
         const entity = new Entity(filename);
         entity.enabled = false;
-        entity.addComponent("gsplat", {asset});
+        entity.addComponent("gsplat", {asset, unified: false});
         this.app.root.addChild(entity);
+        this._applySplatFilterToMaterial(entity.gsplat.material);
         const key = String(this.nextKey++);
         const aabb = asset.resource?.aabb;
         const radius = aabb ? Math.hypot(
@@ -376,7 +429,7 @@ export class PlayCanvasGaussianRenderer {
 
     async render(
         key, image, width, height, region = null, clipFrame = false,
-        clippingPlanes = null
+        clippingPlanes = null, renderTarget = null
     ) {
         await this.ready;
         this.activate(key);
@@ -393,32 +446,96 @@ export class PlayCanvasGaussianRenderer {
         } else {
             this.cameraEntity.camera.scissorRect = new Vec4(0, 0, 1, 1);
         }
-        await new Promise(resolve => {
-            this.app.once("postrender", resolve);
-            this.app.renderNextFrame = true;
-        });
-        // Application.postrender fires before the WebGPU queue is guaranteed
-        // to have finished a large GPU splat sort and its raster pass. Do not
-        // let the DOM compositor expose this canvas while its clear frame can
-        // still precede the completed Gaussian frame.
-        const gpuQueue = this.app.graphicsDevice?.wgpu?.queue;
-        if (gpuQueue?.onSubmittedWorkDone) {
-            await gpuQueue.onSubmittedWorkDone();
-        } else {
-            // WebGL has no promise-based queue fence. finish() is used only at
-            // source-switch/render completion, not on an animation loop.
-            this.app.graphicsDevice?.gl?.finish?.();
+        const previousTarget = this.cameraEntity.camera.renderTarget;
+        this.cameraEntity.camera.renderTarget = renderTarget;
+        try {
+            await new Promise(resolve => {
+                this.app.once("postrender", resolve);
+                this.app.renderNextFrame = true;
+            });
+            // Application.postrender fires before the WebGPU queue is guaranteed
+            // to have finished a large GPU splat sort and its raster pass. Do not
+            // let the DOM compositor expose this canvas while its clear frame can
+            // still precede the completed Gaussian frame.
+            const gpuQueue = this.app.graphicsDevice?.wgpu?.queue;
+            if (gpuQueue?.onSubmittedWorkDone) {
+                await gpuQueue.onSubmittedWorkDone();
+            } else {
+                // WebGL has no promise-based queue fence. finish() is used only at
+                // source-switch/render completion, not on an animation loop.
+                this.app.graphicsDevice?.gl?.finish?.();
+            }
+        } finally {
+            this.cameraEntity.camera.renderTarget = previousTarget;
         }
+    }
+
+    _ensureCaptureTarget(width, height) {
+        if (this.captureTarget?.colorBuffer.width === width
+                && this.captureTarget.colorBuffer.height === height) {
+            return this.captureTarget;
+        }
+        this._destroyCaptureTarget();
+        const colorBuffer = new Texture(this.app.graphicsDevice, {
+            name: "Gaussian capture color",
+            width,
+            height,
+            format: PIXELFORMAT_RGBA8,
+            mipmaps: false,
+        });
+        const renderTarget = new RenderTarget({
+            name: "Gaussian capture",
+            colorBuffer,
+            depth: true,
+            flipY: this.app.graphicsDevice.isWebGPU,
+        });
+        this.captureTarget = {colorBuffer, renderTarget};
+        return this.captureTarget;
+    }
+
+    _destroyCaptureTarget() {
+        if (!this.captureTarget) {
+            return;
+        }
+        this.captureTarget.renderTarget.destroy();
+        this.captureTarget.colorBuffer.destroy();
+        this.captureTarget = null;
     }
 
     async captureFrame(
         key, image, width, height, region = null, clipFrame = false,
         clippingPlanes = null
     ) {
+        const capture = this._ensureCaptureTarget(width, height);
+        // The GPU sorter publishes a newly activated splat set for the next
+        // frame. Prime it once before rendering the pixels we read back;
+        // otherwise a source switch can capture the previous Gaussian asset.
         await this.render(
-            key, image, width, height, region, clipFrame, clippingPlanes
+            key, image, width, height, region, clipFrame, clippingPlanes,
+            capture.renderTarget
         );
-        return createImageBitmap(this.canvas);
+        const sorter = this.entries?.get(key)?.entity?.gsplat?.instance?.sorter;
+        if (sorter) {
+            const sorted = new Promise(resolve => sorter.once("updated", resolve));
+            // Force an exact sort for the configured capture camera. The
+            // legacy sorter runs in a worker, so merely drawing a second
+            // frame can still reuse the order from its previous camera.
+            sorter.setMapping(null);
+            await sorted;
+        }
+        await this.render(
+            key, image, width, height, region, clipFrame, clippingPlanes,
+            capture.renderTarget
+        );
+        const pixels = await capture.colorBuffer.read(0, 0, width, height, {
+            renderTarget: capture.renderTarget,
+            immediate: true,
+        });
+        return new ImageData(
+            unpremultiplyRgba(flipRgbaRows(pixels, width, height)),
+            width,
+            height
+        );
     }
 
     dispose(key = undefined) {
@@ -443,6 +560,7 @@ export class PlayCanvasGaussianRenderer {
 
     destroy() {
         this.destroyed = true;
+        this._destroyCaptureTarget();
         this.dispose();
         if (this.app) {
             this.app.destroy();

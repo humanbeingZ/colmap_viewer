@@ -35,6 +35,19 @@
         return (currentIndex + step + optionCount) % optionCount;
     }
 
+    function uniqueLabel(preferredLabel, existingLabels = []) {
+        const preferred = String(preferredLabel || "").trim() || "Geometry";
+        const used = new Set([...existingLabels].map(label => String(label)));
+        if (!used.has(preferred)) {
+            return preferred;
+        }
+        let suffix = 2;
+        while (used.has(`${preferred} (${suffix})`)) {
+            suffix += 1;
+        }
+        return `${preferred} (${suffix})`;
+    }
+
     const api = {
         IMAGE,
         COLMAP,
@@ -44,6 +57,7 @@
         isGeometry,
         isPointCloud,
         cycleIndex,
+        uniqueLabel,
     };
     globalScope.ReprojectionPaneSources = api;
     if (typeof module !== "undefined" && module.exports) {

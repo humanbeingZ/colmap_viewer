@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 
 import {
     PlayCanvasGaussianRenderer,
+    flipRgbaRows,
     gaussianPointCloudData,
     playCanvasCameraWorldData,
     playCanvasProjectionData,
     shouldReorderGaussianData,
+    unpremultiplyRgba,
 } from "../../static/js/reprojection/playcanvas_gaussian_renderer.mjs";
 
 const projection = playCanvasProjectionData({
@@ -36,6 +38,28 @@ assert.deepEqual(cameraWorld.map(value => Object.is(value, -0) ? 0 : value), [
 ]);
 assert.equal(shouldReorderGaussianData({isWebGPU: true}), false);
 assert.equal(shouldReorderGaussianData({isWebGPU: false}), true);
+assert.deepEqual(
+    [...flipRgbaRows(new Uint8Array([
+        1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16,
+    ]), 2, 2)],
+    [
+        9, 10, 11, 12, 13, 14, 15, 16,
+        1, 2, 3, 4, 5, 6, 7, 8,
+    ]
+);
+assert.deepEqual(
+    [...unpremultiplyRgba(new Uint8ClampedArray([
+        64, 32, 16, 128,
+        10, 20, 30, 255,
+        20, 30, 40, 0,
+    ]))],
+    [
+        128, 64, 32, 128,
+        10, 20, 30, 255,
+        0, 0, 0, 0,
+    ]
+);
 
 {
     const positions = new Float32Array([1, 2, 3, 4, 5, 6]);
@@ -114,22 +138,48 @@ assert.equal(uninitialized.cameraEntity, null);
 
 {
     const renderer = Object.create(PlayCanvasGaussianRenderer.prototype);
-    renderer.canvas = {name: "gaussian-canvas"};
-    let rendered = false;
-    renderer.render = async () => { rendered = true; };
-    const previousCreateImageBitmap = globalThis.createImageBitmap;
-    globalThis.createImageBitmap = async source => ({source});
+    const pixels = new Uint8Array([
+        1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+    const renderTarget = {name: "capture-target"};
+    let renderArguments = null;
+    let renderCount = 0;
+    renderer._ensureCaptureTarget = () => ({
+        renderTarget,
+        colorBuffer: {
+            read: async () => pixels,
+        },
+    });
+    renderer.render = async (...args) => {
+        renderArguments = args;
+        renderCount += 1;
+    };
+    const previousImageData = globalThis.ImageData;
+    globalThis.ImageData = class {
+        constructor(data, width, height) {
+            this.data = data;
+            this.width = width;
+            this.height = height;
+        }
+    };
     try {
         const frame = await renderer.captureFrame(
-            "gaussian", {}, 640, 480
+            "gaussian", {}, 2, 2
         );
-        assert.equal(rendered, true);
-        assert.equal(frame.source, renderer.canvas);
+        assert.equal(renderCount, 2);
+        assert.equal(renderArguments.at(-1), renderTarget);
+        assert.equal(frame.width, 2);
+        assert.equal(frame.height, 2);
+        assert.deepEqual([...frame.data], [
+            191, 213, 234, 12, 207, 223, 239, 16,
+            64, 128, 191, 4, 159, 191, 223, 8,
+        ]);
     } finally {
-        if (previousCreateImageBitmap) {
-            globalThis.createImageBitmap = previousCreateImageBitmap;
+        if (previousImageData) {
+            globalThis.ImageData = previousImageData;
         } else {
-            delete globalThis.createImageBitmap;
+            delete globalThis.ImageData;
         }
     }
 }

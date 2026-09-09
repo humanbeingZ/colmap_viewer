@@ -21,5 +21,17 @@ assert.strictEqual(paneSources.isPointCloud("points", [
 assert.strictEqual(paneSources.cycleIndex(0, 4, 1), 1);
 assert.strictEqual(paneSources.cycleIndex(0, 4, -1), 3);
 assert.strictEqual(paneSources.cycleIndex(3, 4, 1), 0);
+assert.strictEqual(
+    paneSources.uniqueLabel("point_cloud.ply", []),
+    "point_cloud.ply"
+);
+assert.strictEqual(
+    paneSources.uniqueLabel(
+        "point_cloud.ply",
+        ["point_cloud.ply", "point_cloud.ply (2)"]
+    ),
+    "point_cloud.ply (3)"
+);
+assert.strictEqual(paneSources.uniqueLabel("  ", []), "Geometry");
 
 console.log("reprojection pane source tests passed");

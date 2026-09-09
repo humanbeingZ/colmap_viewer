@@ -32,13 +32,68 @@ assert.strictEqual(gpuCanvas.sourceTransition(true, true), "attach");
 assert.strictEqual(gpuCanvas.sourceTransition(true, false), "attach");
 assert.strictEqual(gpuCanvas.sourceTransition(false, true), "keep");
 assert.strictEqual(gpuCanvas.sourceTransition(false, false), "disable");
-assert.strictEqual(gpuCanvas.leftFrameReusable(true, false), true);
-assert.strictEqual(
-    gpuCanvas.leftFrameReusable(true, true),
-    false,
-    "a comparison frame must be redrawn before an independent right pane clips it"
+assert.strictEqual(gpuCanvas.shouldRenderRightOnly({
+    rightIsGpu: true,
+    leftSelectedSource: "gaussian-a",
+    leftPresentedSource: "gaussian-a",
+    leftPresentationActive: true,
+    rightSourcePending: true,
+}), true, "a right-only source change does not redraw the reusable left frame");
+assert.strictEqual(gpuCanvas.shouldRenderRightOnly({
+    rightIsGpu: true,
+    leftSelectedSource: "gaussian-a",
+    leftPresentedSource: null,
+    leftPresentationActive: false,
+    rightSourcePending: true,
+}), false, "the full render path prepares a missing left presentation");
+assert.strictEqual(gpuCanvas.shouldRenderRightOnly({
+    rightIsGpu: true,
+    leftSelectedSource: "gaussian-a",
+    leftPresentedSource: "gaussian-a",
+    leftPresentationActive: true,
+    rightSourcePending: false,
+}), false, "an already rendered right source needs no right-only render");
+assert.strictEqual(gpuCanvas.shouldRenderRightOnly({
+    rightIsGpu: true,
+    leftSelectedSource: "gaussian-b",
+    leftPresentedSource: "gaussian-a",
+    leftPresentationActive: true,
+    rightSourcePending: true,
+}), false, "a stale left capture cannot suppress the selected left render");
+
+function trackedClasses() {
+    const classes = new Set();
+    return {
+        contains: name => classes.has(name),
+        toggle(name, active) {
+            if (active) {
+                classes.add(name);
+            } else {
+                classes.delete(name);
+            }
+        },
+    };
+}
+
+const capturedCanvas = {classList: trackedClasses()};
+const capturedLayer = {classList: trackedClasses(), style: {}};
+const capturedSidePane = {style: {}};
+const capturedPresentation = gpuCanvas.createCapturedPresentation(
+    capturedCanvas,
+    capturedLayer,
+    [capturedLayer, capturedSidePane]
 );
-assert.strictEqual(gpuCanvas.leftFrameReusable(false, false), false);
+capturedPresentation.setActive(true);
+assert.strictEqual(capturedCanvas.classList.contains("active"), true);
+assert.strictEqual(capturedLayer.classList.contains("capture-active"), true);
+capturedPresentation.holdBackground("outgoing-gradient");
+assert.strictEqual(capturedLayer.style.background, "outgoing-gradient");
+assert.strictEqual(capturedSidePane.style.background, "outgoing-gradient");
+capturedPresentation.setActive(false);
+assert.strictEqual(capturedCanvas.classList.contains("active"), false);
+assert.strictEqual(capturedLayer.classList.contains("capture-active"), false);
+assert.strictEqual(capturedLayer.style.background, "");
+assert.strictEqual(capturedSidePane.style.background, "");
 
 const rightPresentationCases = [
     {
@@ -66,6 +121,34 @@ const rightPresentationCases = [
             sharesLeftSurface: false,
         },
         expected: "independent",
+    },
+    {
+        name: "keeps an existing independent frame when left matches it",
+        input: {
+            selectedSource: "gaussian",
+            renderedSource: "gaussian",
+            renderedMode: "independent",
+            leftSelectedSource: "gaussian",
+            leftRenderedSource: "gaussian",
+            selectedIsGpu: true,
+            leftIsGpu: true,
+            sharesLeftSurface: true,
+        },
+        expected: "independent",
+    },
+    {
+        name: "retains a shared right source until its independent frame is ready",
+        input: {
+            selectedSource: "gaussian-b",
+            renderedSource: "gaussian-b",
+            renderedMode: "same",
+            leftSelectedSource: "gaussian-a",
+            leftRenderedSource: "gaussian-b",
+            selectedIsGpu: true,
+            leftIsGpu: true,
+            sharesLeftSurface: true,
+        },
+        expected: "retain",
     },
     {
         name: "retains a shared GPU source while an image decodes",

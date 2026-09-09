@@ -1373,19 +1373,15 @@ export class ReprojectionGpuRenderer {
             return null;
         }
         if (entry.engine === "playcanvas") {
-            const previousKey = this.activeKey;
             this.activateGeometry(key);
-            try {
-                const clippingPlanes = this.clippingPlanesForImage(image);
-                return await this.gaussianRenderer.captureFrame(
-                    entry.adapterKey, image, width, height, region, clipFrame,
-                    clippingPlanes
-                );
-            } finally {
-                if (previousKey !== key && this.geometries.has(previousKey)) {
-                    this.activateGeometry(previousKey);
-                }
-            }
+            const clippingPlanes = this.clippingPlanesForImage(image);
+            // Keep this source active until the caller copies the ImageBitmap.
+            // Re-activating the previous Gaussian here can update shared
+            // PlayCanvas renderer state before the next queued render.
+            return await this.gaussianRenderer.captureFrame(
+                entry.adapterKey, image, width, height, region, clipFrame,
+                clippingPlanes
+            );
         }
         const previousKey = this.activeKey;
         this.activateGeometry(key);

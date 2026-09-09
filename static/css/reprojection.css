@@ -258,11 +258,12 @@
 
 .reprojection-source-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 30px;
+    grid-template-columns: minmax(0, 1fr) 30px 30px;
     align-items: center;
 }
 
 .reprojection-source-choice,
+.reprojection-source-edit,
 .reprojection-source-eye {
     border: 0;
     background: transparent;
@@ -290,6 +291,20 @@
     padding: 5px;
     color: #555;
     font-size: 0.95rem;
+}
+
+.reprojection-source-edit {
+    padding: 5px;
+    color: #555;
+    font-size: 0.9rem;
+}
+
+.reprojection-source-label-input {
+    box-sizing: border-box;
+    min-width: 0;
+    width: calc(100% - 4px);
+    margin: 2px;
+    padding: 4px;
 }
 
 .reprojection-source-eye[aria-pressed="true"] {
@@ -450,6 +465,61 @@
     pointer-events: none;
 }
 
+.reprojection-source-badge {
+    position: absolute;
+    top: 12px;
+    z-index: 10;
+    box-sizing: border-box;
+    max-width: min(45%, 360px);
+    padding: 6px 9px;
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 4px;
+    background: rgb(0 0 0 / 48%);
+    color: rgb(255 255 255 / 82%);
+    font: 500 13px/1.25 sans-serif;
+    opacity: 0;
+    visibility: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 1px rgb(0 0 0 / 70%);
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition:
+        opacity 220ms ease,
+        transform 220ms ease,
+        visibility 0s linear 220ms;
+}
+
+.reprojection-source-badge-left {
+    left: 12px;
+}
+
+.reprojection-source-badge-right {
+    right: 12px;
+    text-align: right;
+}
+
+.reprojection-source-badge.visible {
+    opacity: 0.82;
+    visibility: visible;
+    transform: translateY(0);
+    transition-delay: 0s;
+}
+
+.reprojection-pane .reprojection-source-badge {
+    top: 7px;
+    max-width: calc(100% - 14px);
+}
+
+.reprojection-pane .reprojection-source-badge-left {
+    left: 7px;
+}
+
+.reprojection-pane .reprojection-source-badge-right {
+    right: 7px;
+}
+
 .reprojection-split {
     position: relative;
     max-width: 100%;
@@ -463,6 +533,8 @@
 
 .reprojection-split > img,
 .reprojection-split > canvas,
+.reprojection-captured-layer,
+.reprojection-captured-layer canvas,
 .reprojection-input-layer,
 .reprojection-input-layer img,
 .reprojection-input-layer canvas {
@@ -474,12 +546,33 @@
     pointer-events: none;
 }
 
-.reprojection-right-geometry {
+.reprojection-captured-layer {
+    contain: paint;
+    pointer-events: none;
+    will-change: clip-path;
+}
+
+.reprojection-left-geometry-layer {
+    display: none;
+}
+
+.reprojection-left-geometry-layer.capture-active {
+    display: block;
+    z-index: 1;
+    background: var(--reprojection-bg, linear-gradient(to bottom, #fff, #747474));
+}
+
+.reprojection-right-geometry-layer {
+    z-index: 2;
+    clip-path: inset(0 0 0 50%);
+}
+
+.reprojection-captured-geometry {
     display: none;
     transform-origin: 0 0;
 }
 
-.reprojection-right-geometry.active {
+.reprojection-captured-geometry.active {
     display: block;
 }
 
@@ -543,6 +636,10 @@
         --reprojection-right-bg,
         var(--reprojection-bg, linear-gradient(to bottom, #fff, #747474))
     );
+}
+
+.reprojection-input-layer.geometry-active.gpu-independent {
+    background: transparent;
 }
 
 .reprojection-input-layer.geometry-active.same-geometry,
@@ -611,4 +708,11 @@
 
 .reprojection-pane .reprojection-gpu-fallback {
     position: absolute;
+}
+
+.reprojection-pane .reprojection-left-geometry {
+    position: absolute;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
 }

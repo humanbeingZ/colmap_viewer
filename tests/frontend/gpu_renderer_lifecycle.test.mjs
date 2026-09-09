@@ -347,4 +347,37 @@ function rendererHarness() {
     assert.deepEqual(result, {installed: loaded});
 }
 
+{
+    const renderer = rendererHarness();
+    renderer.activeKey = "left-gaussian";
+    renderer.geometries.set("left-gaussian", {
+        engine: "playcanvas",
+        adapterKey: "left-adapter",
+    });
+    renderer.geometries.set("right-gaussian", {
+        engine: "playcanvas",
+        adapterKey: "right-adapter",
+    });
+    const activations = [];
+    renderer.activateGeometry = key => {
+        activations.push(key);
+        renderer.activeKey = key;
+    };
+    renderer.clippingPlanesForImage = () => ({near: 1, far: 2});
+    renderer.gaussianRenderer = {
+        captureFrame: async key => ({captured: key}),
+    };
+
+    const frame = await renderer._captureGeometryFrame(
+        "right-gaussian", {}, 640, 480, null, false
+    );
+    assert.deepEqual(frame, {captured: "right-adapter"});
+    assert.deepEqual(activations, ["right-gaussian"]);
+    assert.equal(
+        renderer.activeKey,
+        "right-gaussian",
+        "the captured Gaussian must stay active until its bitmap is copied"
+    );
+}
+
 console.log("GPU renderer lifecycle tests passed");

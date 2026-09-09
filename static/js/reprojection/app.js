@@ -7,6 +7,9 @@ const reprojectionImageSelect = document.getElementById("reprojection-image-sele
 const reprojectionStatus = document.getElementById("reprojection-status");
 const reprojectionSplit = document.getElementById("reprojection-split");
 const reprojectionSide = document.getElementById("reprojection-side");
+const reprojectionLeftPane = reprojectionSide.querySelector(
+    ".reprojection-pane"
+);
 const reprojectionInputLayer = document.getElementById("reprojection-input-layer");
 const reprojectionInput = document.getElementById("reprojection-input");
 const reprojectionInputSide = document.getElementById("reprojection-input-side");
@@ -20,6 +23,21 @@ const reprojectionCloud = document.getElementById("reprojection-cloud");
 const reprojectionCloudSide = document.getElementById("reprojection-cloud-side");
 const reprojectionGpuFallback = document.getElementById(
     "reprojection-gpu-fallback"
+);
+const reprojectionLeftGeometryLayer = document.getElementById(
+    "reprojection-left-geometry-layer"
+);
+const reprojectionLeftGeometry = document.getElementById(
+    "reprojection-left-geometry"
+);
+const leftCapturedPresentation =
+    ReprojectionGpuCanvas.createCapturedPresentation(
+        reprojectionLeftGeometry,
+        reprojectionLeftGeometryLayer,
+        [reprojectionLeftGeometryLayer, reprojectionLeftPane]
+    );
+const reprojectionRightGeometryLayer = document.getElementById(
+    "reprojection-right-geometry-layer"
 );
 const reprojectionGpuCanvas = document.getElementById("reprojection-gpu");
 const reprojectionGaussianCanvas = document.getElementById(
@@ -75,6 +93,14 @@ const reprojectionLeftSourcePicker = document.getElementById(
 const reprojectionRightSourcePicker = document.getElementById(
     "reprojection-right-source-picker"
 );
+const reprojectionSourceBadges = {
+    left: [...document.querySelectorAll(
+        '[data-reprojection-source-badge="left"]'
+    )],
+    right: [...document.querySelectorAll(
+        '[data-reprojection-source-badge="right"]'
+    )],
+};
 const reprojectionGeometryDrop = document.getElementById("reprojection-geometry-drop");
 const reprojectionGeometryFile = document.getElementById("reprojection-geometry-file");
 const reprojectionGeometryStatus = document.getElementById("reprojection-geometry-status");
@@ -132,16 +158,42 @@ function clearReprojectionGpuTransitionDebug() {
     }
 }
 
+const builtInReprojectionSourceLabels = {
+    image: "Camera image",
+    colmap: "COLMAP points",
+};
+
 function reprojectionSourceLabel(source) {
-    if (paneSources.isImage(source)) {
-        return "camera image";
-    }
-    if (paneSources.isColmap(source)) {
-        return "COLMAP points";
+    if (source in builtInReprojectionSourceLabels) {
+        return builtInReprojectionSourceLabels[source];
     }
     return reprojectionState.loadedGeometries.find(
         geometry => geometry.gpuKey === source
-    )?.name || "geometry";
+    )?.label || "geometry";
+}
+
+const reprojectionSourceBadgeTimers = {left: null, right: null};
+
+function showReprojectionSourceBadge(pane, source) {
+    window.clearTimeout(reprojectionSourceBadgeTimers[pane]);
+    reprojectionSourceBadgeTimers[pane] = null;
+    const label = reprojectionSourceLabel(source);
+    for (const badge of reprojectionSourceBadges[pane]) {
+        badge.textContent = label;
+        badge.title = label;
+        badge.classList.add("visible");
+    }
+    reprojectionSourceBadgeTimers[pane] = window.setTimeout(() => {
+        for (const badge of reprojectionSourceBadges[pane]) {
+            badge.classList.remove("visible");
+        }
+        reprojectionSourceBadgeTimers[pane] = null;
+    }, 2000);
+}
+
+function showReprojectionSourceBadges() {
+    showReprojectionSourceBadge("left", reprojectionState.leftSource);
+    showReprojectionSourceBadge("right", reprojectionState.rightSource);
 }
 
 async function recoverFromLateIdentityCollision(replacementStream) {
@@ -226,15 +278,17 @@ const reprojectionState = {
     gpuFallbackReady: false,
     gpuFrameRequest: 0,
     gpuRenderedSource: null,
+    leftCapturedSource: null,
     rightRenderedView: {scale: 1, translateX: 0, translateY: 0},
     rightRenderedSource: "image",
+    rightRenderedMode: "independent",
     loadedGeometries: [],
     configuredGeometryLoads: new Map(),
     configuredGeometryLoadQueue: Promise.resolve(),
     configuredGeometryQueueGeneration: 0,
     leftSource: "colmap",
     rightSource: "image",
-    rightGeometryFrameCache: new Map(),
+    geometryFrameCache: new Map(),
 };
 
 let reprojectionGpuRenderer = null;
@@ -271,14 +325,44 @@ const paneSourcePickers = {
         picker: reprojectionLeftSourcePicker,
         cycleIndex: paneSources.cycleIndex,
         onSelect: () => applyPaneSource("left"),
+        onRename: renameReprojectionSource,
     }),
     right: new ReprojectionSourcePicker({
         select: reprojectionRightSource,
         picker: reprojectionRightSourcePicker,
         cycleIndex: paneSources.cycleIndex,
         onSelect: () => applyPaneSource("right"),
+        onRename: renameReprojectionSource,
     }),
 };
+
+function renameReprojectionSource(source, requestedLabel) {
+    const geometry = reprojectionState.loadedGeometries.find(
+        loaded => loaded.gpuKey === source
+    );
+    if (!geometry && !(source in builtInReprojectionSourceLabels)) {
+        return;
+    }
+    const existingLabels = [
+        ...Object.entries(builtInReprojectionSourceLabels)
+            .filter(([key]) => key !== source)
+            .map(([, label]) => label),
+        ...reprojectionState.loadedGeometries
+            .filter(loaded => loaded.gpuKey !== source)
+            .map(loaded => loaded.label),
+    ];
+    const label = paneSources.uniqueLabel(requestedLabel, existingLabels);
+    if (geometry) {
+        geometry.label = label;
+    } else {
+        builtInReprojectionSourceLabels[source] = label;
+    }
+    rebuildPaneSourceOptions();
+    if (reprojectionState.leftSource === source
+            || reprojectionState.rightSource === source) {
+        showReprojectionSourceBadges();
+    }
+}
 
 function rebuildPaneSourceOptions() {
     const geometries = reprojectionState.loadedGeometries;
@@ -294,27 +378,34 @@ function rebuildPaneSourceOptions() {
 
     const leftColmap = document.createElement("option");
     leftColmap.value = "colmap";
-    leftColmap.textContent = "COLMAP points";
+    leftColmap.textContent = reprojectionSourceLabel("colmap");
+    leftColmap.dataset.renamable = "true";
     reprojectionLeftSource.appendChild(leftColmap);
 
     const rightImage = document.createElement("option");
     rightImage.value = "image";
-    rightImage.textContent = "Camera image";
+    rightImage.textContent = reprojectionSourceLabel("image");
+    rightImage.dataset.renamable = "true";
     reprojectionRightSource.appendChild(rightImage);
     const rightColmap = document.createElement("option");
     rightColmap.value = "colmap";
-    rightColmap.textContent = "COLMAP points";
+    rightColmap.textContent = reprojectionSourceLabel("colmap");
+    rightColmap.dataset.renamable = "true";
     reprojectionRightSource.appendChild(rightColmap);
 
     for (const geo of geometries) {
         const leftOpt = document.createElement("option");
         leftOpt.value = geo.gpuKey;
-        leftOpt.textContent = geo.name;
+        leftOpt.textContent = geo.label;
+        leftOpt.title = geo.name;
+        leftOpt.dataset.renamable = "true";
         reprojectionLeftSource.appendChild(leftOpt);
 
         const rightOpt = document.createElement("option");
         rightOpt.value = geo.gpuKey;
-        rightOpt.textContent = geo.name;
+        rightOpt.textContent = geo.label;
+        rightOpt.title = geo.name;
+        rightOpt.dataset.renamable = "true";
         reprojectionRightSource.appendChild(rightOpt);
     }
 
@@ -340,6 +431,7 @@ function applyPaneSource(pane) {
     } else {
         reprojectionState.rightSource = value;
     }
+    showReprojectionSourceBadges();
     paneSourcePickers[pane].sync();
     refreshReprojectionPanes();
 }
@@ -408,14 +500,13 @@ function refreshReprojectionPanes() {
     const rightPresentationMode = ReprojectionGpuCanvas.rightPresentationMode({
         selectedSource: rightSource,
         renderedSource: reprojectionState.rightRenderedSource,
+        renderedMode: reprojectionState.rightRenderedMode,
         leftSelectedSource: leftSource,
         leftRenderedSource: reprojectionState.gpuRenderedSource,
         selectedIsGpu: rightIsGpu,
         leftIsGpu,
         sharesLeftSurface: reprojectionLayout.value === "split",
     });
-    const rightSwitchedToShared = rightSourcePending
-        && rightPresentationMode === "same";
     if (rightPresentationMode === "same") {
         reprojectionState.rightRenderedSource = rightSource;
         reprojectionState.rightRenderedView = {
@@ -425,14 +516,12 @@ function refreshReprojectionPanes() {
     } else if (rightPresentationMode === "independent") {
         reprojectionInputLayer.classList.remove("same-geometry");
     }
-
     if (leftIsGpu) {
         const outgoingPointCloud = activeReprojectionCloud();
         const transitioningFromPointRender =
             reprojectionState.renderMode === "server"
             && Boolean(outgoingPointCloud.getAttribute("src"))
             && outgoingPointCloud.style.visibility !== "hidden";
-        const renderer = getReprojectionGpuRenderer();
         const sourceAlreadyVisible =
             reprojectionState.gpuRenderedSource === leftSource;
         const canKeepCurrentFrame =
@@ -468,24 +557,22 @@ function refreshReprojectionPanes() {
         if (canvasTransition === "attach") {
             attachReprojectionGpuCanvas();
         }
-        const rightOnlyGpuCapture = rightSourcePending
-            && rightIsGpu
-            && ReprojectionGpuCanvas.leftFrameReusable(
-                sourceAlreadyVisible,
-                reprojectionInputLayer.classList.contains("gpu-composited")
-            )
-            && ((reprojectionLayout.value === "side"
-                    && rightSource === leftSource)
-                || renderer.getGeometryEngine(leftSource)
-                    !== renderer.getGeometryEngine(rightSource));
-        if (rightOnlyGpuCapture) {
+        const renderRightOnly =
+            ReprojectionGpuCanvas.shouldRenderRightOnly({
+                rightIsGpu,
+                leftSelectedSource: leftSource,
+                leftPresentedSource: reprojectionState.leftCapturedSource,
+                leftPresentationActive:
+                    reprojectionLeftGeometry.classList.contains("active"),
+                rightSourcePending,
+            });
+        if (renderRightOnly) {
             renderReprojectionRightPane(generation);
         }
         // Do not redraw or uncover an already-correct left canvas when the
         // right pane can render independently or is awaiting a raster frame.
         // The right commit path replaces the retained pane when ready.
-        if (!rightOnlyGpuCapture
-                && !rightSwitchedToShared
+        if (!renderRightOnly
                 && !(rightSourcePending && !rightIsGpu
                     && sourceAlreadyVisible)) {
             renderReprojectionGpuFrame(generation);
@@ -545,7 +632,7 @@ function refreshReprojectionInputVisibility() {
     }
 }
 
-function rightGeometryFrameCacheKey(source, width, height, renderedView) {
+function geometryFrameCacheKey(source, width, height, renderedView) {
     return JSON.stringify([
         source,
         reprojectionState.currentIndex,
@@ -567,8 +654,8 @@ function rightGeometryFrameCacheKey(source, width, height, renderedView) {
     ]);
 }
 
-function cacheRightGeometryFrame(key, frame) {
-    const cache = reprojectionState.rightGeometryFrameCache;
+function cacheGeometryFrame(key, frame) {
+    const cache = reprojectionState.geometryFrameCache;
     const pixels = frame.width * frame.height;
     if (pixels > 16_000_000) {
         return false;
@@ -590,8 +677,8 @@ function cacheRightGeometryFrame(key, frame) {
     return true;
 }
 
-function cachedRightGeometryFrame(key) {
-    const cache = reprojectionState.rightGeometryFrameCache;
+function cachedGeometryFrame(key) {
+    const cache = reprojectionState.geometryFrameCache;
     const frame = cache.get(key) || null;
     if (frame) {
         cache.delete(key);
@@ -600,11 +687,11 @@ function cachedRightGeometryFrame(key) {
     return frame;
 }
 
-function clearRightGeometryFrameCache() {
-    for (const frame of reprojectionState.rightGeometryFrameCache.values()) {
+function clearGeometryFrameCache() {
+    for (const frame of reprojectionState.geometryFrameCache.values()) {
         frame.close?.();
     }
-    reprojectionState.rightGeometryFrameCache.clear();
+    reprojectionState.geometryFrameCache.clear();
 }
 
 async function disposeAllGpuGeometry() {
@@ -613,17 +700,17 @@ async function disposeAllGpuGeometry() {
             await reprojectionGpuRenderer.disposeGeometry();
         }
     } finally {
-        clearRightGeometryFrameCache();
+        clearGeometryFrameCache();
     }
 }
 
-async function getRightGeometryFrame(
+async function getGeometryFrame(
     renderer, source, image, renderSize, region, renderedView
 ) {
-    const cacheKey = rightGeometryFrameCacheKey(
+    const cacheKey = geometryFrameCacheKey(
         source, renderSize.width, renderSize.height, renderedView
     );
-    let frame = cachedRightGeometryFrame(cacheKey);
+    let frame = cachedGeometryFrame(cacheKey);
     let disposable = false;
     if (!frame) {
         frame = await renderer.captureGeometryFrame(
@@ -631,7 +718,7 @@ async function getRightGeometryFrame(
             confineGeometryToImageFrame()
         );
         if (frame) {
-            disposable = !cacheRightGeometryFrame(cacheKey, frame);
+            disposable = !cacheGeometryFrame(cacheKey, frame);
         }
     }
     return {frame, disposable};
@@ -644,16 +731,37 @@ function installRightGeometryFrame(frame, source, renderedView, isCurrent) {
     for (const canvas of [
         reprojectionRightGeometry, reprojectionRightGeometrySide,
     ]) {
-        canvas.width = frame.width;
-        canvas.height = frame.height;
-        const context = canvas.getContext("2d", {alpha: true});
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(frame, 0, 0);
+        paintCapturedGeometryFrame(canvas, frame);
     }
     reprojectionState.rightRenderedView = {...renderedView};
     reprojectionState.rightRenderedSource = source;
     commitRightPanePresentation(source, "independent");
     applyRightPaneCaptureTransform(activeReprojectionRightGeometry());
+    return true;
+}
+
+function paintCapturedGeometryFrame(canvas, frame) {
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    const context = canvas.getContext("2d", {alpha: true});
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (typeof ImageData !== "undefined" && frame instanceof ImageData) {
+        context.putImageData(frame, 0, 0);
+    } else {
+        context.drawImage(frame, 0, 0);
+    }
+}
+
+function installLeftGeometryFrame(frame, source, renderedView, isCurrent) {
+    if (!frame || !isCurrent()) {
+        return false;
+    }
+    paintCapturedGeometryFrame(reprojectionLeftGeometry, frame);
+    reprojectionState.gpuRenderedView = {...renderedView};
+    reprojectionState.gpuRenderedSource = source;
+    reprojectionState.leftCapturedSource = source;
+    leftCapturedPresentation.setActive(true);
+    applyLeftPaneCaptureTransform();
     return true;
 }
 
@@ -691,7 +799,7 @@ async function renderReprojectionRightPane(generation) {
         renderedView.translateY
     );
     try {
-        const {frame, disposable} = await getRightGeometryFrame(
+        const {frame, disposable} = await getGeometryFrame(
             renderer, rightSource, image, renderSize, region, renderedView
         );
         installRightGeometryFrame(
@@ -748,6 +856,10 @@ function renderReprojectionRightPaneServer(generation) {
 }
 
 function applyGpuComparisonSplit(split) {
+    if (reprojectionLayout.value === "split") {
+        reprojectionRightGeometryLayer.style.clipPath =
+            reprojectionInputLayer.style.clipPath;
+    }
     if (!reprojectionInputLayer.classList.contains("gpu-composited")
             || !reprojectionGpuRenderer
             || reprojectionLayout.value !== "split") {
@@ -856,11 +968,12 @@ function syncRightPaneBackground(source) {
     for (const element of [
         reprojectionInput,
         reprojectionInputSide,
-        reprojectionRightGeometry,
         reprojectionRightGeometrySide,
     ]) {
         element.style.background = background;
     }
+    reprojectionRightGeometry.style.background = "";
+    reprojectionRightGeometryLayer.style.background = background;
     if (background) {
         reprojectionInputLayer.style.setProperty(
             "--reprojection-right-bg", background
@@ -871,10 +984,14 @@ function syncRightPaneBackground(source) {
 }
 
 function commitRightPanePresentation(source, mode = "independent") {
+    reprojectionState.rightRenderedMode = mode;
     const geometryActive = paneSources.isGeometry(source);
     const gpuCanvasActive = paneSources.isGpuGeometry(source)
         && mode === "independent";
     reprojectionInputLayer.classList.toggle("geometry-active", geometryActive);
+    reprojectionInputLayer.classList.toggle(
+        "gpu-independent", gpuCanvasActive
+    );
     syncRightPaneBackground(source);
     reprojectionRightGeometry.classList.toggle("active", gpuCanvasActive);
     reprojectionRightGeometrySide.classList.toggle("active", gpuCanvasActive);
@@ -1075,9 +1192,12 @@ function attachReprojectionGpuCanvas() {
         return;
     }
     if (reprojectionLayout.value === "side") {
-        const pane = reprojectionSide.querySelector(".reprojection-pane");
+        const pane = reprojectionLeftPane;
         if (reprojectionGpuFallback.parentElement !== pane) {
             pane.insertBefore(reprojectionGpuFallback, reprojectionCloudSide);
+        }
+        if (reprojectionLeftGeometry.parentElement !== pane) {
+            pane.insertBefore(reprojectionLeftGeometry, reprojectionCloudSide);
         }
         if (reprojectionGpuCanvas.parentElement !== pane) {
             pane.insertBefore(reprojectionGpuCanvas, reprojectionCloudSide);
@@ -1090,8 +1210,18 @@ function attachReprojectionGpuCanvas() {
         reprojectionGpuFallback.style.top = "";
         reprojectionGpuFallback.style.width = "";
         reprojectionGpuFallback.style.height = "";
+        reprojectionLeftGeometry.style.left = "";
+        reprojectionLeftGeometry.style.top = "";
+        reprojectionLeftGeometry.style.width = "";
+        reprojectionLeftGeometry.style.height = "";
         if (reprojectionGpuFallback.parentElement !== reprojectionSplit) {
-            reprojectionSplit.insertBefore(reprojectionGpuFallback, reprojectionCloud);
+            reprojectionSplit.insertBefore(
+                reprojectionGpuFallback, reprojectionLeftGeometryLayer
+            );
+        }
+        if (reprojectionLeftGeometry.parentElement
+                !== reprojectionLeftGeometryLayer) {
+            reprojectionLeftGeometryLayer.appendChild(reprojectionLeftGeometry);
         }
         if (reprojectionGpuCanvas.parentElement !== reprojectionSplit) {
             reprojectionSplit.insertBefore(reprojectionGpuCanvas, reprojectionCloud);
@@ -1136,6 +1266,10 @@ function attachReprojectionGpuCanvas() {
         reprojectionGpuFallback.style.top = `${detailedCanvas.offsetTop}px`;
         reprojectionGpuFallback.style.width = `${detailedCanvas.clientWidth}px`;
         reprojectionGpuFallback.style.height = `${detailedCanvas.clientHeight}px`;
+        reprojectionLeftGeometry.style.left = `${detailedCanvas.offsetLeft}px`;
+        reprojectionLeftGeometry.style.top = `${detailedCanvas.offsetTop}px`;
+        reprojectionLeftGeometry.style.width = `${detailedCanvas.clientWidth}px`;
+        reprojectionLeftGeometry.style.height = `${detailedCanvas.clientHeight}px`;
     }
     reprojectionCloud.style.visibility = "hidden";
     reprojectionCloud.style.background = "";
@@ -1146,9 +1280,13 @@ function attachReprojectionGpuCanvas() {
 function disableReprojectionGpuCanvas() {
     clearReprojectionGpuTransitionDebug();
     delete reprojectionGpuFallback.dataset.transitionSourceLabel;
+    delete reprojectionGpuFallback.dataset.transitionCapturedLeft;
     reprojectionState.gpuFallbackReady = false;
     reprojectionGpuFallback.classList.remove("active", "transition-hold");
     reprojectionGpuFallback.style.transform = "";
+    leftCapturedPresentation.setActive(false);
+    reprojectionState.leftCapturedSource = null;
+    reprojectionLeftGeometry.style.transform = "";
     reprojectionGpuCanvas.classList.remove(
         "active", "transition-outgoing", "transition-source"
     );
@@ -1176,6 +1314,7 @@ function applyReprojectionViewTransform() {
         }
         if (reprojectionState.renderMode === "gpu") {
             applyGpuFallbackViewTransform();
+            applyLeftPaneCaptureTransform();
             applyReprojectionGpuViewTransform();
         }
         if (rightIsRenderedGeometry) {
@@ -1195,6 +1334,7 @@ function applyReprojectionViewTransform() {
         }
         if (reprojectionState.renderMode === "gpu") {
             applyGpuFallbackViewTransform();
+            applyLeftPaneCaptureTransform();
             applyReprojectionGpuViewTransform();
         }
         if (rightIsRenderedGeometry) {
@@ -1217,6 +1357,19 @@ function applyRightPaneCaptureTransform(element) {
     element.style.transform = `matrix(${transform.scale}, 0, 0, `
         + `${transform.scale}, ${transform.translateX}, ${transform.translateY})`;
     applyGeometryFrameClip(element, reprojectionState.rightRenderedView);
+}
+
+function applyLeftPaneCaptureTransform() {
+    const transform = ReprojectionGpu.relativeViewTransform(
+        reprojectionState.gpuRenderedView,
+        currentReprojectionView()
+    );
+    reprojectionLeftGeometry.style.transform =
+        `matrix(${transform.scale}, 0, 0, ${transform.scale}, `
+        + `${transform.translateX}, ${transform.translateY})`;
+    applyGeometryFrameClip(
+        reprojectionLeftGeometry, reprojectionState.gpuRenderedView
+    );
 }
 
 function applyPointRenderTransform(element) {
@@ -1297,7 +1450,7 @@ function holdReprojectionPointTransitionFrame(source) {
         return false;
     }
     if (reprojectionLayout.value === "side") {
-        const pane = reprojectionSide.querySelector(".reprojection-pane");
+        const pane = reprojectionLeftPane;
         if (reprojectionGpuFallback.parentElement !== pane) {
             pane.insertBefore(reprojectionGpuFallback, reprojectionCloudSide);
         }
@@ -1340,6 +1493,34 @@ function holdReprojectionPointTransitionFrame(source) {
 }
 
 function holdReprojectionGpuTransitionFrame() {
+    if (reprojectionLeftGeometry.classList.contains("active")) {
+        if (!drawReprojectionFallback(
+            reprojectionLeftGeometry,
+            reprojectionLeftGeometry.width,
+            reprojectionLeftGeometry.height
+        )) {
+            return false;
+        }
+        reprojectionState.gpuFallbackReady = false;
+        reprojectionState.gpuFallbackRenderedView = {
+            ...reprojectionState.gpuRenderedView,
+        };
+        // The capture bitmap is transparent. Keep its outgoing source
+        // background stable while applyGeometryStatus configures the incoming
+        // source's shared background variable.
+        const outgoingBackground = backgroundGradientForSource(
+            reprojectionState.leftCapturedSource
+        ) || getComputedStyle(
+            reprojectionLeftGeometry.parentElement
+        ).backgroundImage;
+        leftCapturedPresentation.holdBackground(outgoingBackground);
+        reprojectionGpuFallback.dataset.transitionSourceLabel =
+            reprojectionSourceLabel(reprojectionState.gpuRenderedSource);
+        reprojectionGpuFallback.dataset.transitionCapturedLeft = "true";
+        reprojectionGpuFallback.classList.add("active", "transition-hold");
+        applyGpuFallbackViewTransform();
+        return true;
+    }
     const source = [reprojectionGpuCanvas, reprojectionGaussianCanvas].find(
         canvas => canvas.classList.contains("transition-outgoing")
     ) || (reprojectionGaussianCanvas.classList.contains("active")
@@ -1415,7 +1596,15 @@ async function releaseReprojectionTransitionFrame(isCurrent) {
     )) {
         return false;
     }
-    reprojectionGpuFallback.classList.remove("transition-hold", "active");
+    reprojectionGpuFallback.classList.remove("transition-hold");
+    if (reprojectionGpuFallback.dataset.transitionCapturedLeft === "true") {
+        leftCapturedPresentation.setActive(false);
+        reprojectionState.leftCapturedSource = null;
+    }
+    reprojectionGpuFallback.classList.toggle(
+        "active",
+        reprojectionState.gpuFallbackReady
+    );
     if (outgoingCanvas) {
         outgoingCanvas.classList.remove("transition-outgoing", "active");
     }
@@ -1430,6 +1619,7 @@ async function releaseReprojectionTransitionFrame(isCurrent) {
         return false;
     }
     delete reprojectionGpuFallback.dataset.transitionSourceLabel;
+    delete reprojectionGpuFallback.dataset.transitionCapturedLeft;
     clearReprojectionGpuTransitionDebug();
     return true;
 }
@@ -1497,7 +1687,7 @@ function reprojectionDisplaySize(image) {
             height: reprojectionSplit.clientHeight,
         };
     }
-    const pane = reprojectionSide.querySelector(".reprojection-pane");
+    const pane = reprojectionLeftPane;
     const bounds = pane.getBoundingClientRect();
     const aspect = image.width / image.height;
     let width = bounds.width;
@@ -2134,17 +2324,31 @@ async function installBrowserGeometry(
             count: geometry.count,
         }];
         representations.forEach(representation => {
+            const representationName = representation.label
+                ? `${name} (${representation.label})` : name;
+            const preferredLabel = representation.key === geometry.key
+                ? name : representationName;
+            const label = paneSources.uniqueLabel(
+                preferredLabel,
+                [
+                    ...Object.values(builtInReprojectionSourceLabels),
+                    ...reprojectionState.loadedGeometries.map(
+                        loaded => loaded.label
+                    ),
+                ]
+            );
             reprojectionState.loadedGeometries.push({
                 gpuKey: representation.key,
                 sourceId,
-                name: representation.label
-                    ? `${name} (${representation.label})` : name,
+                name: representationName,
+                label,
                 kind: representation.kind,
                 count: representation.count,
                 hiddenByDefault: Boolean(representation.hiddenByDefault),
             });
         });
         reprojectionState.leftSource = geometry.key;
+        showReprojectionSourceBadges();
         reprojectionState.renderMode = "gpu";
         disableReprojectionGpuCanvas();
         rebuildPaneSourceOptions();
@@ -2409,8 +2613,11 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
         // because its right pane is a separate DOM surface.
         if (includeRightPane && paneSources.isGpuGeometry(rightSource)
                 && (reprojectionLayout.value === "side"
-                    || rightSource !== reprojectionState.leftSource)) {
-            const {frame, disposable} = await getRightGeometryFrame(
+                    || rightSource !== reprojectionState.leftSource
+                    || reprojectionState.rightRenderedSource !== rightSource
+                    || reprojectionState.rightRenderedMode
+                        !== "independent")) {
+            const {frame, disposable} = await getGeometryFrame(
                 renderer, rightSource, image, renderSize, region, renderedView
             );
             if (frameRequest !== reprojectionState.gpuFrameRequest
@@ -2452,6 +2659,28 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
                 || reprojectionState.renderMode !== "gpu") {
             return;
         }
+        let leftCapturedFrame = null;
+        let leftCapturedDisposable = false;
+        if (destinationEngine === "playcanvas") {
+            const captured = await getGeometryFrame(
+                renderer,
+                reprojectionState.leftSource,
+                image,
+                renderSize,
+                region,
+                renderedView
+            );
+            leftCapturedFrame = captured.frame;
+            leftCapturedDisposable = captured.disposable;
+            if (frameRequest !== reprojectionState.gpuFrameRequest
+                    || generation !== reprojectionState.generation
+                    || reprojectionState.renderMode !== "gpu") {
+                if (leftCapturedDisposable) {
+                    leftCapturedFrame?.close?.();
+                }
+                return;
+            }
+        }
         if (switchingEngineCanvas) {
             // PlayCanvas postrender means commands were submitted, not that
             // its hidden canvas has reached the browser compositor. Retain
@@ -2460,6 +2689,9 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
             if (frameRequest !== reprojectionState.gpuFrameRequest
                     || generation !== reprojectionState.generation
                     || reprojectionState.renderMode !== "gpu") {
+                if (leftCapturedDisposable) {
+                    leftCapturedFrame?.close?.();
+                }
                 return;
             }
         }
@@ -2472,17 +2704,31 @@ async function renderReprojectionGpuFrame(generation, includeRightPane = true) {
                 && generation === reprojectionState.generation
                 && reprojectionState.renderMode === "gpu";
         if (!await releaseReprojectionTransitionFrame(frameIsCurrent)) {
+            if (leftCapturedDisposable) {
+                leftCapturedFrame?.close?.();
+            }
             return;
         }
         if (reprojectionLayout.value === "split"
-                && reprojectionState.rightSource === reprojectionState.leftSource) {
+                && reprojectionState.rightSource === reprojectionState.leftSource
+                && reprojectionState.rightRenderedMode !== "independent") {
             reprojectionState.rightRenderedView = renderedView;
             reprojectionState.rightRenderedSource = reprojectionState.leftSource;
             commitRightPanePresentation(
                 reprojectionState.leftSource, "same"
             );
         }
-        if (isFullFrameGpuView(renderedView)
+        if (leftCapturedFrame) {
+            installLeftGeometryFrame(
+                leftCapturedFrame,
+                reprojectionState.leftSource,
+                renderedView,
+                frameIsCurrent
+            );
+            if (leftCapturedDisposable) {
+                leftCapturedFrame.close?.();
+            }
+        } else if (isFullFrameGpuView(renderedView)
                 && isDefaultGpuClippingRange()) {
             captureReprojectionGpuFallback();
         } else {

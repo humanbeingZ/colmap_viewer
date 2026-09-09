@@ -138,6 +138,12 @@ file to the server and therefore has no fixed 1 GiB upload limit. The practical
 limit is available browser/GPU memory; parsing temporarily holds the source
 buffer and decoded geometry at the same time.
 
+Loaded geometry uses its filename as its source label; duplicate labels receive
+a numeric suffix. Use the pencil action in either pane's source menu to rename
+any source, including COLMAP points and the camera image. Switching sources with
+the menu or the `t`/`y` shortcuts shows both selected labels together in the
+upper corners of their panes, then fades them after two seconds.
+
 COLMAP distortion cannot be represented by a standard Three.js perspective
 camera. For distorted camera models, the viewer therefore uses its calibrated
 server renderer rather than displaying an inaccurate overlay. That fallback
