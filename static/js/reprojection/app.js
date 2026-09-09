@@ -222,6 +222,7 @@ const reprojectionState = {
     browserGeometryLoading: false,
     pointRenderedView: {scale: 1, translateX: 0, translateY: 0},
     gpuRenderedView: {scale: 1, translateX: 0, translateY: 0},
+    gpuFallbackRenderedView: {scale: 1, translateX: 0, translateY: 0},
     gpuFallbackReady: false,
     gpuFrameRequest: 0,
     gpuRenderedSource: null,
@@ -1174,11 +1175,7 @@ function applyReprojectionViewTransform() {
             setImageTransform(reprojectionCloudSide);
         }
         if (reprojectionState.renderMode === "gpu") {
-            setImageTransform(reprojectionGpuFallback);
-            applyGeometryFrameClip(
-                reprojectionGpuFallback,
-                {scale: 1, translateX: 0, translateY: 0}
-            );
+            applyGpuFallbackViewTransform();
             applyReprojectionGpuViewTransform();
         }
         if (rightIsRenderedGeometry) {
@@ -1197,11 +1194,7 @@ function applyReprojectionViewTransform() {
             setImageTransform(reprojectionCloud);
         }
         if (reprojectionState.renderMode === "gpu") {
-            setImageTransform(reprojectionGpuFallback);
-            applyGeometryFrameClip(
-                reprojectionGpuFallback,
-                {scale: 1, translateX: 0, translateY: 0}
-            );
+            applyGpuFallbackViewTransform();
             applyReprojectionGpuViewTransform();
         }
         if (rightIsRenderedGeometry) {
@@ -1276,6 +1269,13 @@ function captureReprojectionGpuFallback() {
     reprojectionState.gpuFallbackReady = drawReprojectionFallback(
         source, source.width, source.height
     );
+    if (reprojectionState.gpuFallbackReady) {
+        reprojectionState.gpuFallbackRenderedView = {
+            ...reprojectionState.gpuRenderedView,
+        };
+        reprojectionGpuFallback.classList.add("active");
+        applyGpuFallbackViewTransform();
+    }
 }
 
 function drawReprojectionFallback(source, width, height, paintBackground = null) {
@@ -1328,12 +1328,14 @@ function holdReprojectionPointTransitionFrame(source) {
     if (!retained) {
         return false;
     }
-    reprojectionGpuFallback.style.transform = source.style.transform;
-    reprojectionGpuFallback.style.clipPath = source.style.clipPath;
+    reprojectionState.gpuFallbackRenderedView = {
+        ...reprojectionState.pointRenderedView,
+    };
     reprojectionState.gpuFallbackReady = false;
     reprojectionGpuFallback.dataset.transitionSourceLabel =
         reprojectionSourceLabel("colmap");
     reprojectionGpuFallback.classList.add("active", "transition-hold");
+    applyGpuFallbackViewTransform();
     return true;
 }
 
@@ -1373,12 +1375,14 @@ function holdReprojectionGpuTransitionFrame() {
     if (!drawReprojectionFallback(source, source.width, source.height)) {
         return false;
     }
-    reprojectionGpuFallback.style.transform = source.style.transform;
-    reprojectionGpuFallback.style.clipPath = source.style.clipPath;
+    reprojectionState.gpuFallbackRenderedView = {
+        ...reprojectionState.gpuRenderedView,
+    };
     reprojectionState.gpuFallbackReady = false;
     reprojectionGpuFallback.dataset.transitionSourceLabel =
         reprojectionSourceLabel(reprojectionState.gpuRenderedSource);
     reprojectionGpuFallback.classList.add("active", "transition-hold");
+    applyGpuFallbackViewTransform();
     return true;
 }
 
@@ -1469,6 +1473,21 @@ function applyReprojectionGpuViewTransform() {
     applyGeometryFrameClip(
         reprojectionGaussianCanvas, reprojectionState.gpuRenderedView
     );
+}
+
+function applyGpuFallbackViewTransform() {
+    // A transition snapshot contains pixels rendered for the outgoing view.
+    // Treating it as a full-frame image would apply a settled pan twice while
+    // the incoming GPU frame is waiting to be exposed.
+    const renderedView = reprojectionState.gpuFallbackRenderedView;
+    const transform = ReprojectionGpu.relativeViewTransform(
+        renderedView,
+        currentReprojectionView()
+    );
+    reprojectionGpuFallback.style.transform =
+        `matrix(${transform.scale}, 0, 0, ${transform.scale}, `
+        + `${transform.translateX}, ${transform.translateY})`;
+    applyGeometryFrameClip(reprojectionGpuFallback, renderedView);
 }
 
 function reprojectionDisplaySize(image) {
