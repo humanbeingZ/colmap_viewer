@@ -57,21 +57,29 @@
                     </div>
                 </div>
                 <div class="display-options">
-                    <label>
-                        <input type="checkbox" id="show-markers"> Show Markers
-                    </label>
-
-                    <label>
-                        <input type="checkbox" id="show-only-matched"> Show only matched markers
-                    </label>
-
-                    <div id="line-display-options" hidden>
-                        <label>
-                            <input type="checkbox" id="show-lines"> Show Lines
+                    <div class="feature-display-row">
+                        <label class="feature-display-option">
+                            <input type="checkbox" id="show-markers">
+                            <span>Show features</span>
+                            <kbd class="control-shortcut-key">f</kbd>
                         </label>
+                        <label class="feature-display-option feature-display-filter">
+                            <input type="checkbox" id="show-only-matched" disabled>
+                            <span>matched-only</span>
+                            <kbd class="control-shortcut-key">o</kbd>
+                        </label>
+                    </div>
 
-                        <label>
-                            <input type="checkbox" id="show-only-matched-lines"> Show only matched lines
+                    <div id="line-display-options" class="feature-display-row" hidden>
+                        <label class="feature-display-option">
+                            <input type="checkbox" id="show-lines">
+                            <span>Show lines</span>
+                            <kbd class="control-shortcut-key">l</kbd>
+                        </label>
+                        <label class="feature-display-option feature-display-filter">
+                            <input type="checkbox" id="show-only-matched-lines" disabled>
+                            <span>matched-only</span>
+                            <kbd class="control-shortcut-key">m</kbd>
                         </label>
                     </div>
 
@@ -118,11 +126,11 @@
                          class="reprojection-field reprojection-mask-field" hidden>
                         <label class="reprojection-checkbox">
                             <input id="reprojection-mask" type="checkbox">
-                            Masked input <kbd>m</kbd>
+                            Masked input <kbd class="control-shortcut-key">m</kbd>
                         </label>
                         <label class="reprojection-checkbox">
                             <input id="reprojection-invert-mask" type="checkbox">
-                            Invert mask <kbd>i</kbd>
+                            Invert mask <kbd class="control-shortcut-key">i</kbd>
                         </label>
                     </div>
                 </div>
@@ -145,7 +153,7 @@
                         <div class="reprojection-option-grid">
                             <div class="reprojection-field">
                                 <label for="reprojection-left-source-trigger">
-                                    Left pane <kbd>t</kbd>
+                                    Left pane <kbd class="control-shortcut-key">t</kbd>
                                 </label>
                                 <div id="reprojection-left-source-picker"
                                      class="reprojection-source-picker">
@@ -166,7 +174,7 @@
                             </div>
                             <div class="reprojection-field">
                                 <label for="reprojection-right-source-trigger">
-                                    Right pane <kbd>y</kbd>
+                                    Right pane <kbd class="control-shortcut-key">y</kbd>
                                 </label>
                                 <div id="reprojection-right-source-picker"
                                      class="reprojection-source-picker">
@@ -425,7 +433,8 @@
     <script src="/static/js/matching/epipolar.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/navigation.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/correspondence.js?v={{ static_asset_version }}"></script>
-    <script src="/static/js/matching/line_controls.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/display_controls.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/shortcuts.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/shared/viewer_stream.js"></script>
     <script src="/static/js/reprojection/api.js"></script>

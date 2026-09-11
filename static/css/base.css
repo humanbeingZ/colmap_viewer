@@ -75,6 +75,18 @@ body {
     font-size: 14px;
 }
 
+.controls .control-shortcut-key {
+    margin-left: 4px;
+    padding: 0 3px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    color: #888;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+        "Liberation Mono", monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+
 .viewer-mode-selection {
     margin-bottom: 16px;
 }

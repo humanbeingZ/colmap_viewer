@@ -43,8 +43,6 @@ let currentImage2 = new Image();
 let currentMatches = { inlier: [], outlier: [] };
 let currentLineMatches = [];
 let markerSize = 3;
-let onlyShowMatched = false;
-let onlyShowMatchedLines = false;
 let pointMatchesVisible = false;
 let lineMatchesVisible = false;
 let pointCorrespondences = MatchingCorrespondence.createIndex([]);
@@ -58,6 +56,18 @@ let matchingPreviewGeneration = 0;
 let matchingPreviewActive = false;
 let matchingPreviewController = null;
 const imageLoadGenerations = {image1: 0, image2: 0};
+const displayShortcutBindings = {
+    f: {control: showMarkersCheckbox},
+    l: {
+        control: showLinesCheckbox,
+        enabled: () => !lineDisplayOptions.hidden,
+    },
+    o: {control: showOnlyMatchedCheckbox},
+    m: {
+        control: showOnlyMatchedLinesCheckbox,
+        enabled: () => !lineDisplayOptions.hidden,
+    },
+};
 
 function matchingImageUrl(name, maxSize = null) {
     const path = String(name).split("/").map(encodeURIComponent).join("/");
@@ -213,6 +223,9 @@ const epipolarTool = new EpipolarTool({
 globalThis.matchingInitialViewReady = init();
 
 async function init() {
+    MatchingDisplayControls.syncMatchedOnly(
+        showMarkersCheckbox, showOnlyMatchedCheckbox
+    );
     await initializeSources();
     await updateLineControlsVisibility();
     await fetchImages();
@@ -261,7 +274,7 @@ async function updateLineControlsVisibility() {
     } catch (error) {
         console.error("Error loading matching capabilities:", error);
     }
-    MatchingLineControls.setAvailable({
+    MatchingDisplayControls.setLineAvailability({
         displayOptions: lineDisplayOptions,
         matchActions: lineMatchActions,
         showLines: showLinesCheckbox,
@@ -269,7 +282,6 @@ async function updateLineControlsVisibility() {
         drawMatches: drawLineMatchesButton,
     }, available);
     if (!available) {
-        onlyShowMatchedLines = false;
         lineMatchesVisible = false;
     }
 }
@@ -588,7 +600,7 @@ function drawFeatureLines(ctx, lines, currentScale, canvasKey) {
         const matchedIndices = MatchingCorrespondence.indices(
             lineCorrespondences, canvasKey
         );
-        if (onlyShowMatchedLines && !matchedIndices.has(index)) {
+        if (showOnlyMatchedLinesCheckbox.checked && !matchedIndices.has(index)) {
             return;
         }
 
@@ -614,7 +626,7 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
     let size = markerSize / currentScale;
 
     points.forEach((p, index) => {
-        if (onlyShowMatched) {
+        if (showOnlyMatchedCheckbox.checked) {
             let shouldDraw = false;
             if (showInlierMatchesCheckbox.checked) {
                 shouldDraw = MatchingCorrespondence.indices(
@@ -724,7 +736,12 @@ function drawMatches() {
 function shouldFetchPairMatches() {
     return showInlierMatchesCheckbox.checked
         || showWrongMatchesCheckbox.checked
-        || onlyShowMatchedLines
+        || MatchingDisplayControls.isMatchedOnlyActive(
+            showMarkersCheckbox, showOnlyMatchedCheckbox
+        )
+        || MatchingDisplayControls.isMatchedOnlyActive(
+            showLinesCheckbox, showOnlyMatchedLinesCheckbox
+        )
         || lineMatchesVisible;
 }
 
@@ -839,35 +856,64 @@ poseNeighborLimit.addEventListener("change", async () => {
     }
 });
 
-showMarkersCheckbox.addEventListener("change", () => {
+function hasPointMatches() {
+    return currentMatches.inlier.length > 0 || currentMatches.outlier.length > 0;
+}
+
+function hasLineMatches() {
+    return currentLineMatches.length > 0;
+}
+
+function hasSelectedImagePair() {
+    return Boolean(image1Select.value && image2Select.value);
+}
+
+function redrawFeatureCanvases() {
     redrawCanvas(image1Canvas, ctx1, "image1");
     redrawCanvas(image2Canvas, ctx2, "image2");
-});
+}
 
-showOnlyMatchedCheckbox.addEventListener("change", async () => {
-    onlyShowMatched = showOnlyMatchedCheckbox.checked;
+async function handlePrimaryDisplayChange(primary, matchedOnly, hasMatches) {
+    MatchingDisplayControls.syncMatchedOnly(
+        primary, matchedOnly
+    );
+    await handleMatchedOnlyChange(primary, matchedOnly, hasMatches);
+}
 
-    if (onlyShowMatched && currentMatches.inlier.length === 0 && currentMatches.outlier.length === 0 && image1Select.value && image2Select.value) {
+async function handleMatchedOnlyChange(primary, matchedOnly, hasMatches) {
+    if (MatchingDisplayControls.isMatchedOnlyActive(primary, matchedOnly)
+            && !hasMatches() && hasSelectedImagePair()) {
         await handleFetchMatches();
     }
+    redrawFeatureCanvases();
+}
 
-    redrawCanvas(image1Canvas, ctx1, "image1");
-    redrawCanvas(image2Canvas, ctx2, "image2");
+showMarkersCheckbox.addEventListener("change", () => {
+    void handlePrimaryDisplayChange(
+        showMarkersCheckbox, showOnlyMatchedCheckbox, hasPointMatches
+    );
+});
+
+showOnlyMatchedCheckbox.addEventListener("change", () => {
+    void handleMatchedOnlyChange(
+        showMarkersCheckbox, showOnlyMatchedCheckbox, hasPointMatches
+    );
 });
 
 showLinesCheckbox.addEventListener("change", () => {
-    redrawCanvas(image1Canvas, ctx1, "image1");
-    redrawCanvas(image2Canvas, ctx2, "image2");
+    void handlePrimaryDisplayChange(
+        showLinesCheckbox,
+        showOnlyMatchedLinesCheckbox,
+        hasLineMatches
+    );
 });
 
-showOnlyMatchedLinesCheckbox.addEventListener("change", async () => {
-    onlyShowMatchedLines = showOnlyMatchedLinesCheckbox.checked;
-    if (onlyShowMatchedLines && currentLineMatches.length === 0
-            && image1Select.value && image2Select.value) {
-        await handleFetchMatches();
-    }
-    redrawCanvas(image1Canvas, ctx1, "image1");
-    redrawCanvas(image2Canvas, ctx2, "image2");
+showOnlyMatchedLinesCheckbox.addEventListener("change", () => {
+    void handleMatchedOnlyChange(
+        showLinesCheckbox,
+        showOnlyMatchedLinesCheckbox,
+        hasLineMatches
+    );
 });
 
 drawMatchesButton.addEventListener("click", async () => {
@@ -1109,6 +1155,10 @@ const matchingHoldNavigation = new MatchingNavigation.MatchingHoldNavigation({
 
 window.addEventListener("keydown", (e) => {
     if (document.body.dataset.viewerMode === "reprojection") {
+        return;
+    }
+    if (MatchingShortcuts.handle(e, displayShortcutBindings)) {
+        e.preventDefault();
         return;
     }
     // Preserve native arrow behavior for unrelated dropdowns. The two image

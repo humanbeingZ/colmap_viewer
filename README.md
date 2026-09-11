@@ -16,7 +16,7 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
     image pair, and draw midpoint-to-midpoint match connectors.
 *   **Inlier/Outlier Filtering:** Filter matches to show only inliers or outliers.
 *   **Interactive Controls:** Pan and zoom within the images.
-*   **Keyboard Navigation:** Use arrow keys (Up/Down/Left/Right) to quickly cycle through the second image in a pair.
+*   **Keyboard Navigation:** Use arrow keys (Up/Down/Left/Right) to navigate image pairs. Press `f` to show features, `l` to show lines, `o` to show only matched features, and `m` to show only matched lines.
 *   **Match Statistics:** View a summary of match statistics, including the number of total, inlier, and outlier matches, and the two-view configuration.
 *   **Multiple Data Sources:** Supports loading data from either a COLMAP project folder or a database file.
 *   **Geometry-only Reprojection:** Render every point in `points3D` through a registered camera without using feature observations or tracks.
@@ -120,10 +120,10 @@ The user interface consists of a control panel on the left and a viewer on the r
         COLMAP name without the displayed list index.
         Reconstructions without point tracks use nearby, similarly oriented camera poses as image-pair candidates. The viewer labels these generated pairs and lets you configure their maximum count.
     *   **Display Options:**
-        *   **Show Markers:** Toggle the visibility of feature markers.
-        *   **Show only matched markers:** Show only the markers that have a match in the other image.
-        *   **Show Lines:** Toggle LIMAP 2D line segments when a holistic final model is loaded.
-        *   **Show only matched lines:** Show only segments associated across the selected image pair.
+        *   **Show features:** Toggle the visibility of feature points.
+        *   **matched-only:** Show only feature points that have a match in the other image. This option is available when Show features is enabled.
+        *   **Show lines:** Toggle LIMAP 2D line segments when a holistic final model is loaded.
+        *   **matched-only:** Show only associated line segments in the selected image pair. This option is available when Show lines is enabled.
         *   **Match Type:** Filter matches by inlier or outlier.
     *   **Action Buttons:**
         *   **Draw Matches:** Toggle the visibility of match lines.
@@ -218,8 +218,9 @@ and labels both stages; omit the parameter during normal use.
 Pass a LIMAP holistic `final_model` directory to `--colmap_project_path` just
 as you would pass a COLMAP sparse model. If the directory contains
 `structures/structures2d.bin`, at least one 2D line, and LIMAP is installed in
-the viewer's Python environment, the feature-match viewer exposes **Show
-Lines**, **Show only matched lines**, and **Draw Line Matches**. Matched
+the viewer's Python environment, the feature-match viewer exposes **Show lines**,
+**matched-only**, and **Draw Line Matches**. The line filter is
+available when Show lines is enabled. Matched
 segments in the second image inherit their corresponding first-image color,
 while all line-match connectors use a uniform cyan distinct from green point
 matches. Line matches connect segment midpoints because line-track endpoints

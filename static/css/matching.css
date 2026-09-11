@@ -60,6 +60,63 @@
     font-size: inherit;
 }
 
+.display-options .feature-display-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 7px;
+}
+
+.display-options .feature-display-option {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    padding: 3px 0;
+    color: #3f4750;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 120ms ease;
+}
+
+.display-options .feature-display-option:has(input:checked) {
+    color: #0969da;
+}
+
+.display-options .feature-display-filter {
+    margin-left: auto;
+    color: #656d76;
+    font-weight: 500;
+}
+
+.display-options .feature-display-filter:has(input:disabled) {
+    color: #a1a8b0;
+    cursor: not-allowed;
+}
+
+.display-options .feature-display-filter:has(input:disabled)
+        .control-shortcut-key {
+    opacity: 0.55;
+}
+
+.display-options .feature-display-option input {
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: #0969da;
+}
+
+.display-options .feature-display-option span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.display-options .feature-display-option .control-shortcut-key {
+    flex: 0 0 auto;
+    margin-left: 0;
+}
+
 .generated-pair-options {
     box-sizing: border-box;
     margin: 2px 0 12px;
@@ -93,6 +150,7 @@
 
 .action-buttons button {
     display: block;
+    box-sizing: border-box;
     width: 100%;
     padding: 10px;
     background-color: #007bff;

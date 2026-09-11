@@ -27,17 +27,6 @@
     font-weight: 600;
 }
 
-.reprojection-field > label kbd {
-    font-family: inherit;
-    font-size: 0.7rem;
-    font-weight: 500;
-    color: #888;
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    padding: 0 3px;
-    margin-left: 4px;
-}
-
 .reprojection-field-wide {
     grid-column: 1 / -1;
 }
