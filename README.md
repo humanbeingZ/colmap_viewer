@@ -124,7 +124,7 @@ The user interface consists of a control panel on the left and a viewer on the r
         *   **matched-only:** Show only feature points that have a match in the other image. This option is available when Show features is enabled.
         *   **Show lines:** Toggle LIMAP 2D line segments when a holistic final model is loaded.
         *   **matched-only:** Show only associated line segments in the selected image pair. This option is available when Show lines is enabled.
-        *   **Match Type:** Filter matches by inlier or outlier.
+        *   **Match Type:** Filter database matches by inlier or outlier. This control is hidden for final SfM reconstructions, which do not retain rejected matches.
     *   **Action Buttons:**
         *   **Draw Matches:** Toggle the visibility of match lines.
         *   **Draw Epipolar Lines:** Move a corresponding epipolar line across both images to inspect pose precision.

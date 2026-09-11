@@ -473,6 +473,10 @@ class ColmapService:
             )
         return self._has_lines2d_cache
 
+    def supports_match_type_filtering(self) -> bool:
+        """Whether the active source retains raw and verified feature matches."""
+        return self.active_source == DataSource.DATABASE and self.db is not None
+
     def touch_geometry_stream(self, request_stream: str = "default"):
         self._geometry_store.touch(request_stream)
 

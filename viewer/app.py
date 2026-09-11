@@ -602,7 +602,10 @@ async def set_source(source_name: str):
 
 @app.get("/api/matching/capabilities")
 async def get_matching_capabilities():
-    return {"lines": colmap_service.has_line_data()}
+    return {
+        "lines": colmap_service.has_line_data(),
+        "match_types": colmap_service.supports_match_type_filtering(),
+    }
 
 @app.get("/api/images", response_model=List[Dict[str, Any]])
 async def get_images():

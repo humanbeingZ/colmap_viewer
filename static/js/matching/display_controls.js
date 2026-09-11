@@ -27,5 +27,32 @@
         syncMatchedOnly(elements.showLines, elements.onlyMatchedLines);
     }
 
-    return {isMatchedOnlyActive, setLineAvailability, syncMatchedOnly};
+    function setMatchTypeAvailability(elements, available) {
+        const {container, inlier, outlier} = elements;
+        if (!available) {
+            if (!container.hidden) {
+                container.savedSelection = {
+                    inlier: inlier.checked,
+                    outlier: outlier.checked,
+                };
+            }
+            container.hidden = true;
+            inlier.checked = true;
+            outlier.checked = false;
+            return;
+        }
+
+        if (container.savedSelection) {
+            inlier.checked = container.savedSelection.inlier;
+            outlier.checked = container.savedSelection.outlier;
+        }
+        container.hidden = false;
+    }
+
+    return {
+        isMatchedOnlyActive,
+        setLineAvailability,
+        setMatchTypeAvailability,
+        syncMatchedOnly,
+    };
 });

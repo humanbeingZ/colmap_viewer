@@ -117,6 +117,29 @@
     margin-left: 0;
 }
 
+.match-type-options {
+    display: flex;
+    align-items: center;
+    color: gray;
+    font-size: 0.9em;
+}
+
+.match-type-options > span {
+    margin-right: 10px;
+    font-weight: normal;
+}
+
+.display-options .match-type-options label {
+    display: flex;
+    align-items: center;
+    margin: 0 10px 0 0;
+    font-weight: normal;
+}
+
+.display-options .match-type-options label:last-child {
+    margin-right: 0;
+}
+
 .generated-pair-options {
     box-sizing: border-box;
     margin: 2px 0 12px;

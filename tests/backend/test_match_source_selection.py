@@ -21,6 +21,7 @@ class MatchSourceSelectionTest(unittest.TestCase):
     def test_sfm_source_uses_reconstruction_even_when_database_is_loaded(self):
         self.service.active_source = DataSource.SFM_MODEL
 
+        self.assertFalse(self.service.supports_match_type_filtering())
         self.assertEqual(self.service.get_matches(1, 2, "inlier"), [[1, 2]])
         self.assertEqual(self.service.get_matches(1, 2, "outlier"), [])
         self.service.db.read_matches.assert_not_called()
@@ -28,6 +29,7 @@ class MatchSourceSelectionTest(unittest.TestCase):
     def test_database_source_uses_database_even_when_reconstruction_is_loaded(self):
         self.service.active_source = DataSource.DATABASE
 
+        self.assertTrue(self.service.supports_match_type_filtering())
         self.assertEqual(self.service.get_matches(1, 2), [[7, 8]])
         self.service._get_matches_from_recon.assert_not_called()
 

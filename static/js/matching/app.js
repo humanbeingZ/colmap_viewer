@@ -16,6 +16,7 @@ const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
 const showLinesCheckbox = document.getElementById("show-lines");
 const showOnlyMatchedLinesCheckbox = document.getElementById("show-only-matched-lines");
 const lineDisplayOptions = document.getElementById("line-display-options");
+const matchTypeOptions = document.getElementById("match-type-options");
 const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
 const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
 const resetViewButton = document.getElementById("reset-view");
@@ -227,7 +228,7 @@ async function init() {
         showMarkersCheckbox, showOnlyMatchedCheckbox
     );
     await initializeSources();
-    await updateLineControlsVisibility();
+    await updateMatchingCapabilities();
     await fetchImages();
 }
 
@@ -266,11 +267,10 @@ async function initializeSources() {
     }
 }
 
-async function updateLineControlsVisibility() {
-    let available = false;
+async function updateMatchingCapabilities() {
+    let capabilities = {lines: false, match_types: false};
     try {
-        const capabilities = await matchingApi.capabilities();
-        available = Boolean(capabilities.lines);
+        capabilities = await matchingApi.capabilities();
     } catch (error) {
         console.error("Error loading matching capabilities:", error);
     }
@@ -280,8 +280,13 @@ async function updateLineControlsVisibility() {
         showLines: showLinesCheckbox,
         onlyMatchedLines: showOnlyMatchedLinesCheckbox,
         drawMatches: drawLineMatchesButton,
-    }, available);
-    if (!available) {
+    }, Boolean(capabilities.lines));
+    MatchingDisplayControls.setMatchTypeAvailability({
+        container: matchTypeOptions,
+        inlier: showInlierMatchesCheckbox,
+        outlier: showWrongMatchesCheckbox,
+    }, Boolean(capabilities.match_types));
+    if (!capabilities.lines) {
         lineMatchesVisible = false;
     }
 }
@@ -774,7 +779,7 @@ sourceSelect.addEventListener('change', async () => {
     clearMatchSummary();
 
     await fetch(`/api/set_source/${newSource}`, { method: 'POST' });
-    await updateLineControlsVisibility();
+    await updateMatchingCapabilities();
     await fetchImages();
 
     image1Select.value = oldImageId1;

@@ -40,4 +40,19 @@ assert.strictEqual(elements.displayOptions.hidden, false);
 assert.strictEqual(elements.matchActions.hidden, false);
 assert.strictEqual(elements.onlyMatchedLines.disabled, true);
 
+const matchTypes = {
+    container: {hidden: false},
+    inlier: {checked: false},
+    outlier: {checked: true},
+};
+displayControls.setMatchTypeAvailability(matchTypes, false);
+assert.strictEqual(matchTypes.container.hidden, true);
+assert.strictEqual(matchTypes.inlier.checked, true);
+assert.strictEqual(matchTypes.outlier.checked, false);
+
+displayControls.setMatchTypeAvailability(matchTypes, true);
+assert.strictEqual(matchTypes.container.hidden, false);
+assert.strictEqual(matchTypes.inlier.checked, false);
+assert.strictEqual(matchTypes.outlier.checked, true);
+
 console.log("matching display control tests passed");
