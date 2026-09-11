@@ -20,6 +20,23 @@
     border-radius: 4px;
 }
 
+.image-select-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.image-selection .image-select-row select {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+}
+
+.image-selection .copy-image-name {
+    margin-top: 3px;
+    margin-bottom: 10px;
+}
+
 .image-selection .image-selection-label {
     display: flex;
     justify-content: space-between;

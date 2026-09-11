@@ -2,13 +2,20 @@
 const sourceSelect = document.getElementById("source-select");
 const image1Select = document.getElementById("image1-select");
 const image2Select = document.getElementById("image2-select");
+const copyImage1NameButton = document.getElementById("copy-image1-name");
+const copyImage2NameButton = document.getElementById("copy-image2-name");
 const image1Canvas = document.getElementById("image1-canvas");
 const image2Canvas = document.getElementById("image2-canvas");
 const matchCanvas = document.getElementById("match-canvas");
 const showMarkersCheckbox = document.getElementById("show-markers");
 const drawMatchesButton = document.getElementById("draw-matches");
+const drawLineMatchesButton = document.getElementById("draw-line-matches");
+const lineMatchActions = document.getElementById("line-match-actions");
 const drawEpipolarButton = document.getElementById("draw-epipolar");
 const showOnlyMatchedCheckbox = document.getElementById("show-only-matched");
+const showLinesCheckbox = document.getElementById("show-lines");
+const showOnlyMatchedLinesCheckbox = document.getElementById("show-only-matched-lines");
+const lineDisplayOptions = document.getElementById("line-display-options");
 const showInlierMatchesCheckbox = document.getElementById("show-inlier-matches");
 const showWrongMatchesCheckbox = document.getElementById("show-wrong-matches");
 const resetViewButton = document.getElementById("reset-view");
@@ -18,11 +25,14 @@ const generatedPairOptions = document.getElementById("generated-pair-options");
 const generatedPairMessage = document.getElementById("generated-pair-message");
 const poseNeighborLimit = document.getElementById("pose-neighbor-limit");
 const matchingApi = new MatchingApi();
+SharedClipboard.decorateButton(copyImage1NameButton);
+SharedClipboard.decorateButton(copyImage2NameButton);
 
 // Canvas contexts
 const ctx1 = image1Canvas.getContext("2d");
 const ctx2 = image2Canvas.getContext("2d");
 const matchCtx = matchCanvas.getContext("2d");
+const LINE_MATCH_CONNECTOR_COLOR = "rgba(0, 180, 255, 0.8)";
 
 // State variables
 let allImages = [];
@@ -31,17 +41,18 @@ let currentImage2Data = null;
 let currentImage1 = new Image();
 let currentImage2 = new Image();
 let currentMatches = { inlier: [], outlier: [] };
+let currentLineMatches = [];
 let markerSize = 3;
 let onlyShowMatched = false;
-let linesVisible = false;
-let matchedIndices1 = new Set();
-let matchedIndices2 = new Set();
-let inlierMatchedIndices1 = new Set();
-let inlierMatchedIndices2 = new Set();
-let outlierMatchedIndices1 = new Set();
-let outlierMatchedIndices2 = new Set();
+let onlyShowMatchedLines = false;
+let pointMatchesVisible = false;
+let lineMatchesVisible = false;
+let pointCorrespondences = MatchingCorrespondence.createIndex([]);
+let inlierPointCorrespondences = MatchingCorrespondence.createIndex([]);
+let outlierPointCorrespondences = MatchingCorrespondence.createIndex([]);
+let lineCorrespondences = MatchingCorrespondence.createIndex([]);
 let image1Colors = [];
-let matches_map_img2_to_img1 = new Map();
+let line1Colors = [];
 let currentMatchSummary = null;
 let matchingPreviewGeneration = 0;
 let matchingPreviewActive = false;
@@ -56,13 +67,11 @@ function matchingImageUrl(name, maxSize = null) {
 
 function resetMatchState() {
     currentMatches = { inlier: [], outlier: [] };
-    matches_map_img2_to_img1 = new Map();
-    matchedIndices1 = new Set();
-    matchedIndices2 = new Set();
-    inlierMatchedIndices1 = new Set();
-    inlierMatchedIndices2 = new Set();
-    outlierMatchedIndices1 = new Set();
-    outlierMatchedIndices2 = new Set();
+    currentLineMatches = [];
+    pointCorrespondences = MatchingCorrespondence.createIndex([]);
+    inlierPointCorrespondences = MatchingCorrespondence.createIndex([]);
+    outlierPointCorrespondences = MatchingCorrespondence.createIndex([]);
+    lineCorrespondences = MatchingCorrespondence.createIndex([]);
 }
 
 function setMatchSummaryMessage(message) {
@@ -97,6 +106,10 @@ function renderMatchSummary(summary) {
     if (summary.inlier_count !== null) {
         stats.push({ label: "inlier matches:", value: summary.inlier_count ?? "N/A" });
         stats.push({ label: "outlier matches:", value: summary.outlier_count ?? "N/A" });
+    }
+    if (summary.line_match_count !== undefined
+            && summary.line_match_count !== null) {
+        stats.push({ label: "line matches:", value: summary.line_match_count });
     }
 
     stats.forEach(({ label, value }) => {
@@ -201,6 +214,7 @@ globalThis.matchingInitialViewReady = init();
 
 async function init() {
     await initializeSources();
+    await updateLineControlsVisibility();
     await fetchImages();
 }
 
@@ -239,12 +253,34 @@ async function initializeSources() {
     }
 }
 
+async function updateLineControlsVisibility() {
+    let available = false;
+    try {
+        const capabilities = await matchingApi.capabilities();
+        available = Boolean(capabilities.lines);
+    } catch (error) {
+        console.error("Error loading matching capabilities:", error);
+    }
+    MatchingLineControls.setAvailable({
+        displayOptions: lineDisplayOptions,
+        matchActions: lineMatchActions,
+        showLines: showLinesCheckbox,
+        onlyMatchedLines: showOnlyMatchedLinesCheckbox,
+        drawMatches: drawLineMatchesButton,
+    }, available);
+    if (!available) {
+        onlyShowMatchedLines = false;
+        lineMatchesVisible = false;
+    }
+}
+
 async function fetchImages() {
     try {
         allImages = await matchingApi.images();
         populateImageSelects();
         if (!image1Select.value && allImages.length) {
             image1Select.value = String(allImages[0].id);
+            updateImageCopyButtons();
             await drawImageAndFeatures(
                 currentImage1, image1Canvas, ctx1,
                 image1Select.value, true
@@ -298,6 +334,33 @@ function populateImageSelects() {
 
     image1Select.value = oldImage1;
     image2Select.value = oldImage2;
+    updateImageCopyButtons();
+}
+
+function selectedImageName(select) {
+    const selected = allImages.find(
+        image => String(image.id) === String(select.value)
+    );
+    return selected ? selected.name : null;
+}
+
+function updateImageCopyButtons() {
+    copyImage1NameButton.disabled = !selectedImageName(image1Select);
+    copyImage2NameButton.disabled = !selectedImageName(image2Select);
+}
+
+async function copySelectedImageName(select, button) {
+    const name = selectedImageName(select);
+    if (!name) {
+        return;
+    }
+    try {
+        await SharedClipboard.copyText(name);
+        SharedClipboard.showCopied(button, `Copied: ${name}`);
+    } catch (error) {
+        console.error("Unable to copy image name:", error);
+        button.title = "Unable to copy image name";
+    }
 }
 
 async function updateImage2List() {
@@ -332,6 +395,7 @@ async function updateImage2List() {
     if (previousImage2 && matchedImageIdsSet.has(Number(previousImage2))) {
         image2Select.value = previousImage2;
     }
+    updateImageCopyButtons();
 }
 
 // --- Canvas Drawing Functions ---
@@ -373,6 +437,9 @@ async function drawImageAndFeatures(imageElement, canvas, ctx, imageId, isLeftPa
     if (isLeftPanel) {
         currentImage1Data = imageData;
         image1Colors = imageData.points2D.map((p, i) => getColor(i, 0.5));
+        line1Colors = (imageData.lines2D || []).map(
+            (line, i) => getColor(i, 0.85)
+        );
     } else {
         currentImage2Data = imageData;
     }
@@ -508,8 +575,39 @@ function redrawCanvas(canvas, ctx, canvasKey) {
     if (showMarkersCheckbox.checked) {
         drawFeaturePoints(ctx, imageData.points2D, state.scale, canvasKey);
     }
+    if (showLinesCheckbox.checked) {
+        drawFeatureLines(ctx, imageData.lines2D || [], state.scale, canvasKey);
+    }
 
     ctx.restore();
+}
+
+function drawFeatureLines(ctx, lines, currentScale, canvasKey) {
+    ctx.lineWidth = 2 / currentScale;
+    lines.forEach((line, index) => {
+        const matchedIndices = MatchingCorrespondence.indices(
+            lineCorrespondences, canvasKey
+        );
+        if (onlyShowMatchedLines && !matchedIndices.has(index)) {
+            return;
+        }
+
+        ctx.strokeStyle = MatchingCorrespondence.color(
+            index, canvasKey, line1Colors, lineCorrespondences,
+            fallbackIndex => getColor(fallbackIndex, 0.85)
+        );
+        ctx.beginPath();
+        ctx.moveTo(line.start[0], line.start[1]);
+        ctx.lineTo(line.end[0], line.end[1]);
+        ctx.stroke();
+    });
+}
+
+function lineMidpoint(line) {
+    return {
+        x: (line.start[0] + line.end[0]) / 2,
+        y: (line.start[1] + line.end[1]) / 2,
+    };
 }
 
 function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
@@ -519,38 +617,24 @@ function drawFeaturePoints(ctx, points, currentScale, canvasKey) {
         if (onlyShowMatched) {
             let shouldDraw = false;
             if (showInlierMatchesCheckbox.checked) {
-                if (canvasKey === "image1" && inlierMatchedIndices1.has(index)) {
-                    shouldDraw = true;
-                }
-                if (canvasKey === "image2" && inlierMatchedIndices2.has(index)) {
-                    shouldDraw = true;
-                }
+                shouldDraw = MatchingCorrespondence.indices(
+                    inlierPointCorrespondences, canvasKey
+                ).has(index);
             }
-            if (showWrongMatchesCheckbox.checked) {
-                if (canvasKey === "image1" && outlierMatchedIndices1.has(index)) {
-                    shouldDraw = true;
-                }
-                if (canvasKey === "image2" && outlierMatchedIndices2.has(index)) {
-                    shouldDraw = true;
-                }
+            if (!shouldDraw && showWrongMatchesCheckbox.checked) {
+                shouldDraw = MatchingCorrespondence.indices(
+                    outlierPointCorrespondences, canvasKey
+                ).has(index);
             }
             if (!shouldDraw) {
                 return;
             }
         }
 
-        let color;
-        if (canvasKey === "image1") {
-            color = image1Colors[index];
-        } else {
-            if (matches_map_img2_to_img1.has(index)) {
-                const index_in_img1 = matches_map_img2_to_img1.get(index);
-                color = image1Colors[index_in_img1];
-            } else {
-                color = getColor(index, 0.5);
-            }
-        }
-        ctx.fillStyle = color;
+        ctx.fillStyle = MatchingCorrespondence.color(
+            index, canvasKey, image1Colors, pointCorrespondences,
+            fallbackIndex => getColor(fallbackIndex, 0.5)
+        );
         ctx.beginPath();
         ctx.arc(p.x, p.y, size, 0, 2 * Math.PI);
         ctx.fill();
@@ -566,14 +650,15 @@ function drawMatches() {
     if (matchingPreviewActive) {
         return;
     }
-    if (!linesVisible || !currentImage1Data || !currentImage2Data || (!currentMatches.inlier.length && !currentMatches.outlier.length)) {
+    if ((!pointMatchesVisible && !lineMatchesVisible)
+            || !currentImage1Data || !currentImage2Data) {
         return;
     }
 
     matchCtx.lineWidth = 1;
 
     // Draw inlier matches in green
-    if (showInlierMatchesCheckbox.checked) {
+    if (pointMatchesVisible && showInlierMatchesCheckbox.checked) {
         matchCtx.strokeStyle = "rgba(0, 255, 0, 0.5)";
         currentMatches.inlier.forEach((match) => {
             const p1 = currentImage1Data.points2D[match[0]];
@@ -592,7 +677,7 @@ function drawMatches() {
     }
 
     // Draw outlier matches in red
-    if (showWrongMatchesCheckbox.checked) {
+    if (pointMatchesVisible && showWrongMatchesCheckbox.checked) {
         matchCtx.strokeStyle = "rgba(255, 0, 0, 0.5)";
         currentMatches.outlier.forEach((match) => {
             const p1 = currentImage1Data.points2D[match[0]];
@@ -609,6 +694,56 @@ function drawMatches() {
             }
         });
     }
+
+    // A line track relates complete segments; its endpoints need not
+    // correspond. Connect segment midpoints to avoid implying that they do.
+    if (lineMatchesVisible) {
+        matchCtx.strokeStyle = LINE_MATCH_CONNECTOR_COLOR;
+        currentLineMatches.forEach((match) => {
+            const line1 = (currentImage1Data.lines2D || [])[match[0]];
+            const line2 = (currentImage2Data.lines2D || [])[match[1]];
+            if (!line1 || !line2) {
+                return;
+            }
+            const midpoint1 = lineMidpoint(line1);
+            const midpoint2 = lineMidpoint(line2);
+            if (!isPointVisible(midpoint1, "image1")
+                    || !isPointVisible(midpoint2, "image2")) {
+                return;
+            }
+            const p1Canvas = imageToCanvas(midpoint1, "image1");
+            const p2Canvas = imageToCanvas(midpoint2, "image2");
+            matchCtx.beginPath();
+            matchCtx.moveTo(p1Canvas.x, p1Canvas.y);
+            matchCtx.lineTo(p2Canvas.x, p2Canvas.y);
+            matchCtx.stroke();
+        });
+    }
+}
+
+function shouldFetchPairMatches() {
+    return showInlierMatchesCheckbox.checked
+        || showWrongMatchesCheckbox.checked
+        || onlyShowMatchedLines
+        || lineMatchesVisible;
+}
+
+async function refreshSelectedPair() {
+    if (!image1Select.value || !image2Select.value) {
+        clearMatchSummary();
+        return;
+    }
+    if (shouldFetchPairMatches()) {
+        await handleFetchMatches();
+    } else {
+        await updateMatchSummary();
+    }
+}
+
+function redrawMatchingView() {
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+    drawMatches();
 }
 
 // --- Event Handlers ---
@@ -622,6 +757,7 @@ sourceSelect.addEventListener('change', async () => {
     clearMatchSummary();
 
     await fetch(`/api/set_source/${newSource}`, { method: 'POST' });
+    await updateLineControlsVisibility();
     await fetchImages();
 
     image1Select.value = oldImageId1;
@@ -634,26 +770,14 @@ sourceSelect.addEventListener('change', async () => {
         await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, oldImageId2, false);
     }
 
-    const hasPair = Boolean(image1Select.value && image2Select.value);
-    const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-
-    if (hasPair) {
-        if (wantsMatches) {
-            await handleFetchMatches();
-        } else {
-            await updateMatchSummary();
-        }
-    } else {
-        clearMatchSummary();
-    }
+    await refreshSelectedPair();
 
     // Redraw canvases to update markers based on new matches or reset state
-    redrawCanvas(image1Canvas, ctx1, "image1");
-    redrawCanvas(image2Canvas, ctx2, "image2");
-    drawMatches();
+    redrawMatchingView();
 });
 
 image1Select.addEventListener("change", async () => {
+    updateImageCopyButtons();
     const imageId1 = image1Select.value;
     const oldImageId2 = image2Select.value;
 
@@ -670,20 +794,8 @@ image1Select.addEventListener("change", async () => {
     const newImage2Options = Array.from(image2Select.options).map(opt => opt.value);
     if (oldImageId2 && newImage2Options.includes(oldImageId2)) {
         image2Select.value = oldImageId2;
-        const hasPair = Boolean(image1Select.value && image2Select.value);
-        const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-        if (hasPair) {
-            if (wantsMatches) {
-                await handleFetchMatches();
-            } else {
-                await updateMatchSummary();
-            }
-        } else {
-            clearMatchSummary();
-        }
-        redrawCanvas(image1Canvas, ctx1, "image1");
-        redrawCanvas(image2Canvas, ctx2, "image2");
-        drawMatches();
+        await refreshSelectedPair();
+        redrawMatchingView();
     } else {
         image2Select.value = "";
         await drawImageAndFeatures(currentImage2, image2Canvas, ctx2, null, false);
@@ -693,6 +805,7 @@ image1Select.addEventListener("change", async () => {
 });
 
 image2Select.addEventListener("change", async () => {
+    updateImageCopyButtons();
     resetMatchState();
 
     const imageId2 = image2Select.value;
@@ -703,21 +816,16 @@ image2Select.addEventListener("change", async () => {
         return;
     }
 
-    const hasPair = Boolean(image1Select.value && image2Select.value);
-    const wantsMatches = showInlierMatchesCheckbox.checked || showWrongMatchesCheckbox.checked;
-    if (hasPair) {
-        if (wantsMatches) {
-            await handleFetchMatches();
-        } else {
-            await updateMatchSummary();
-        }
-    } else {
-        clearMatchSummary();
-    }
+    await refreshSelectedPair();
+    redrawMatchingView();
+});
 
-    redrawCanvas(image1Canvas, ctx1, "image1");
-    redrawCanvas(image2Canvas, ctx2, "image2");
-    drawMatches();
+copyImage1NameButton.addEventListener("click", () => {
+    copySelectedImageName(image1Select, copyImage1NameButton);
+});
+
+copyImage2NameButton.addEventListener("click", () => {
+    copySelectedImageName(image2Select, copyImage2NameButton);
 });
 
 poseNeighborLimit.addEventListener("change", async () => {
@@ -747,17 +855,54 @@ showOnlyMatchedCheckbox.addEventListener("change", async () => {
     redrawCanvas(image2Canvas, ctx2, "image2");
 });
 
-drawMatchesButton.addEventListener("click", async () => {
-    linesVisible = !linesVisible;
+showLinesCheckbox.addEventListener("change", () => {
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+});
 
-    if (linesVisible && currentMatches.inlier.length === 0 && currentMatches.outlier.length === 0) {
+showOnlyMatchedLinesCheckbox.addEventListener("change", async () => {
+    onlyShowMatchedLines = showOnlyMatchedLinesCheckbox.checked;
+    if (onlyShowMatchedLines && currentLineMatches.length === 0
+            && image1Select.value && image2Select.value) {
+        await handleFetchMatches();
+    }
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
+});
+
+drawMatchesButton.addEventListener("click", async () => {
+    pointMatchesVisible = !pointMatchesVisible;
+    drawMatchesButton.classList.toggle("active", pointMatchesVisible);
+
+    if (pointMatchesVisible && currentMatches.inlier.length === 0
+            && currentMatches.outlier.length === 0
+            && currentLineMatches.length === 0) {
         const success = await handleFetchMatches();
         if (!success) {
-            linesVisible = false;
+            pointMatchesVisible = false;
+            drawMatchesButton.classList.remove("active");
             return;
         }
     }
 
+    drawMatches();
+});
+
+drawLineMatchesButton.addEventListener("click", async () => {
+    lineMatchesVisible = !lineMatchesVisible;
+    drawLineMatchesButton.classList.toggle("active", lineMatchesVisible);
+
+    if (lineMatchesVisible && currentLineMatches.length === 0) {
+        const success = await handleFetchMatches();
+        if (!success) {
+            lineMatchesVisible = false;
+            drawLineMatchesButton.classList.remove("active");
+            return;
+        }
+    }
+
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
     drawMatches();
 });
 
@@ -794,18 +939,21 @@ async function handleFetchMatches() {
 
     let inlierMatches;
     let outlierMatches;
+    let lineMatches;
     try {
-        [inlierMatches, outlierMatches] = await Promise.all([
+        [inlierMatches, outlierMatches, lineMatches] = await Promise.all([
             matchingApi.matches(imageId1, imageId2, "inlier"),
             matchingApi.matches(imageId1, imageId2, "outlier"),
+            matchingApi.lineMatches(imageId1, imageId2),
         ]);
     } catch (error) {
         console.error("Error fetching matches:", error);
         inlierMatches = null;
         outlierMatches = null;
+        lineMatches = null;
     }
 
-    if (inlierMatches === null || outlierMatches === null) {
+    if (inlierMatches === null || outlierMatches === null || lineMatches === null) {
         resetMatchState();
         await updateMatchSummary();
         return false;
@@ -815,22 +963,15 @@ async function handleFetchMatches() {
         inlier: inlierMatches || [],
         outlier: outlierMatches || []
     };
-
-    // Populate the index sets for inliers and outliers
-    currentMatches.inlier.forEach(match => {
-        inlierMatchedIndices1.add(match[0]);
-        inlierMatchedIndices2.add(match[1]);
-    });
-    currentMatches.outlier.forEach(match => {
-        outlierMatchedIndices1.add(match[0]);
-        outlierMatchedIndices2.add(match[1]);
-    });
+    currentLineMatches = lineMatches || [];
 
     const allCombinedMatches = [...currentMatches.inlier, ...currentMatches.outlier];
-
-    matches_map_img2_to_img1 = new Map(allCombinedMatches.map((m) => [m[1], m[0]]));
-    matchedIndices1 = new Set(allCombinedMatches.map((m) => m[0]));
-    matchedIndices2 = new Set(allCombinedMatches.map((m) => m[1]));
+    pointCorrespondences = MatchingCorrespondence.createIndex(allCombinedMatches);
+    inlierPointCorrespondences = MatchingCorrespondence.createIndex(currentMatches.inlier);
+    outlierPointCorrespondences = MatchingCorrespondence.createIndex(currentMatches.outlier);
+    lineCorrespondences = MatchingCorrespondence.createIndex(currentLineMatches);
+    redrawCanvas(image1Canvas, ctx1, "image1");
+    redrawCanvas(image2Canvas, ctx2, "image2");
     await updateMatchSummary();
     return true;
 }

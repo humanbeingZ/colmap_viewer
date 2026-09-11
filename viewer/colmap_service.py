@@ -1,4 +1,4 @@
-import pycolmap
+import importlib
 import os
 import io
 import hashlib
@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from enum import Enum
 
 import numpy as np
+import pycolmap
 from PIL import Image
 from .geometry.epipolar import PoseNeighborIndex, fundamental_matrix
 from .geometry.mesh_stream import StreamablePlyMesh
@@ -115,6 +116,12 @@ class ColmapService:
         ).hexdigest()[:16]
 
         self.reconstruction: Optional[pycolmap.Reconstruction] = None
+        # Populated for a LIMAP holistic final model.  Keep this optional so
+        # ordinary COLMAP/database sessions do not require LIMAP.
+        self.holistic_reconstruction: Optional[Any] = None
+        self.structure_reconstruction: Optional[Any] = None
+        self._line3d_observations: Optional[Dict[int, Dict[int, int]]] = None
+        self._has_lines2d_cache: Optional[bool] = None
         self.db: Optional[pycolmap.Database] = None
 
         self.sources: List[DataSource] = []
@@ -361,13 +368,49 @@ class ColmapService:
         # Try to load reconstruction
         if self.project_path and os.path.exists(self.project_path):
             try:
-                self.reconstruction = pycolmap.Reconstruction(self.project_path)
+                structures_path = os.path.join(
+                    self.project_path, "structures", "structures2d.bin"
+                )
+                if os.path.isfile(structures_path):
+                    try:
+                        scene = importlib.import_module("limap.scene")
+                        self.holistic_reconstruction = (
+                            scene.HolisticReconstruction(self.project_path)
+                        )
+                        self.structure_reconstruction = (
+                            self.holistic_reconstruction.structure_recon
+                        )
+                        self._line3d_observations = None
+                        self._has_lines2d_cache = None
+                        self.reconstruction = (
+                            self.holistic_reconstruction.point_recon
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "LIMAP structures found but could not be loaded; "
+                            "loading only COLMAP points: %s", exc
+                        )
+                        self.holistic_reconstruction = None
+                        self.structure_reconstruction = None
+                        self._line3d_observations = None
+                        self._has_lines2d_cache = None
+                if self.reconstruction is None:
+                    self.reconstruction = pycolmap.Reconstruction(self.project_path)
                 self.sources.append(DataSource.SFM_MODEL)
                 print(
                     f"Loaded COLMAP reconstruction with {len(self.reconstruction.images)} images and {len(self.reconstruction.points3D)} 3D points.")
+                if self.structure_reconstruction is not None:
+                    print(
+                        "Loaded LIMAP structure reconstruction with "
+                        f"{self.structure_reconstruction.num_lines3D()} 3D lines."
+                    )
             except Exception as e:
                 print(f"Error loading COLMAP reconstruction: {e}")
                 self.reconstruction = None
+                self.holistic_reconstruction = None
+                self.structure_reconstruction = None
+                self._line3d_observations = None
+                self._has_lines2d_cache = None
 
         # Determine database path
         db_to_load = self.db_path
@@ -413,6 +456,22 @@ class ColmapService:
             self.reconstruction
             and self.reconstruction.images
         )
+
+    def has_line_data(self) -> bool:
+        """Whether the active source supplies at least one LIMAP 2D line."""
+        if (
+            self.active_source != DataSource.SFM_MODEL
+            or self.structure_reconstruction is None
+            or self.reconstruction is None
+        ):
+            return False
+        if self._has_lines2d_cache is None:
+            self._has_lines2d_cache = any(
+                self._has_structure2d(image_id)
+                and bool(self.structure_reconstruction.structure2d(image_id).lines)
+                for image_id in self.reconstruction.images
+            )
+        return self._has_lines2d_cache
 
     def touch_geometry_stream(self, request_stream: str = "default"):
         self._geometry_store.touch(request_stream)
@@ -882,8 +941,51 @@ class ColmapService:
             "height": camera.height,
             "path": os.path.join(self.image_base_path, image.name),
             "points2D": points2D_list,
+            "lines2D": self._get_lines2d_from_recon(image_id),
             "camera_params": camera.params.tolist()
         }
+
+    def _get_lines2d_from_recon(self, image_id: int) -> List[Dict[str, Any]]:
+        structure = self.structure_reconstruction
+        if structure is None or not self._has_structure2d(image_id):
+            return []
+
+        line3d_ids = self._get_line3d_observations().get(image_id, {})
+        lines = []
+        for index, line in enumerate(structure.structure2d(image_id).lines):
+            endpoints = np.asarray(line.as_array(), dtype=np.float64)
+            if endpoints.shape != (2, 2):
+                continue
+            lines.append({
+                "start": [float(endpoints[0, 0]), float(endpoints[0, 1])],
+                "end": [float(endpoints[1, 0]), float(endpoints[1, 1])],
+                "line3D_id": line3d_ids.get(index),
+            })
+        return lines
+
+    def _has_structure2d(self, image_id: int) -> bool:
+        structure = self.structure_reconstruction
+        if structure is None:
+            return False
+        exists = getattr(structure, "exists_structure2d", None)
+        if exists is not None:
+            return bool(exists(image_id))
+        return image_id in structure.structures2d
+
+    def _get_line3d_observations(self) -> Dict[int, Dict[int, int]]:
+        """Map authoritative LIMAP track observations to their 3D line IDs."""
+        if self._line3d_observations is not None:
+            return self._line3d_observations
+        observations: Dict[int, Dict[int, int]] = {}
+        structure = self.structure_reconstruction
+        if structure is not None:
+            for line3d_id, line3d in structure.lines3D.items():
+                for element in line3d.track.elements:
+                    observations.setdefault(int(element.image_id), {})[
+                        int(element.point2D_idx)
+                    ] = int(line3d_id)
+        self._line3d_observations = observations
+        return observations
 
     def _get_image_data_from_db(self, image_id: int) -> Optional[Dict[str, Any]]:
         if not self.db:
@@ -911,6 +1013,7 @@ class ColmapService:
             "height": int(camera.height),
             "path": os.path.join(self.image_base_path, str(image.name)),
             "points2D": points2D_list,
+            "lines2D": [],
             "camera_params": list(camera.params)
         }
 
@@ -1011,6 +1114,17 @@ class ColmapService:
                 if track_element.image_id != image_id:
                     matched_image_ids.add(track_element.image_id)
 
+        structure = self.structure_reconstruction
+        if structure is not None and self._has_structure2d(image_id):
+            observed_lines3D = set(
+                self._get_line3d_observations().get(image_id, {}).values()
+            )
+            for line3D_id in observed_lines3D:
+                line3D = structure.lines3D[line3D_id]
+                for track_element in line3D.track.elements:
+                    if track_element.image_id != image_id:
+                        matched_image_ids.add(track_element.image_id)
+
         return sorted(matched_image_ids)
 
     def _get_pose_neighbor_index(self) -> PoseNeighborIndex:
@@ -1027,7 +1141,7 @@ class ColmapService:
 
     def get_matches(self, image_id1: int, image_id2: int, match_type: Optional[str] = None) -> Optional[List]:
         """Returns the matches between two images."""
-        if self.db:
+        if self.active_source == DataSource.DATABASE and self.db:
             try:
                 all_matches = self.db.read_matches(image_id1, image_id2)
                 if all_matches is None:
@@ -1051,11 +1165,10 @@ class ColmapService:
             except Exception as e:
                 print(f"Error reading matches from database: {e}")
                 return None
-        elif self.reconstruction:
+        if self.active_source == DataSource.SFM_MODEL and self.reconstruction:
             if match_type == "outlier":
                 return []
-            else:
-                return self._get_matches_from_recon(image_id1, image_id2)
+            return self._get_matches_from_recon(image_id1, image_id2)
         return None
 
     def _get_matches_from_recon(self, image_id1: int, image_id2: int) -> Optional[List]:
@@ -1075,14 +1188,40 @@ class ColmapService:
 
         return matches
 
+    def get_line_matches(self, image_id1: int, image_id2: int) -> List[List[int]]:
+        """Return final-model 2D line pairs associated with the same 3D line."""
+        if self.active_source != DataSource.SFM_MODEL:
+            return []
+        lines1 = self._get_lines2d_from_recon(image_id1)
+        lines2 = self._get_lines2d_from_recon(image_id2)
+        indices_by_line3D_1: Dict[int, List[int]] = {}
+        indices_by_line3D_2: Dict[int, List[int]] = {}
+        for index, line in enumerate(lines1):
+            line3D_id = line["line3D_id"]
+            if line3D_id is not None:
+                indices_by_line3D_1.setdefault(line3D_id, []).append(index)
+        for index, line in enumerate(lines2):
+            line3D_id = line["line3D_id"]
+            if line3D_id is not None:
+                indices_by_line3D_2.setdefault(line3D_id, []).append(index)
+
+        return [
+            [index1, index2]
+            for line3D_id, indices1 in indices_by_line3D_1.items()
+            for index1 in indices1
+            for index2 in indices_by_line3D_2.get(line3D_id, [])
+        ]
+
     def get_match_summary(self, image_id1: int, image_id2: int) -> Dict[str, Any]:
         if self.active_source == DataSource.SFM_MODEL:
             matches = self._get_matches_from_recon(image_id1, image_id2)
+            line_matches = self.get_line_matches(image_id1, image_id2)
             return {
                 "available": True,
                 "total_matches": len(matches) if matches is not None else 0,
                 "inlier_count": None,
                 "outlier_count": None,
+                "line_match_count": len(line_matches),
                 "two_view_configuration": None,
                 "two_view_configuration_id": None,
                 "two_view_geometry_available": False,

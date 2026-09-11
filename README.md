@@ -11,6 +11,9 @@ The COLMAP Viewer provides an interactive interface to inspect the results of a 
 
 *   **Image Visualization:** View images from a COLMAP project.
 *   **Feature Matching:** Visualize feature matches between two images.
+*   **LIMAP Line Matching:** When a LIMAP holistic `final_model` is supplied,
+    visualize its 2D line segments, filter to lines matched in the selected
+    image pair, and draw midpoint-to-midpoint match connectors.
 *   **Inlier/Outlier Filtering:** Filter matches to show only inliers or outliers.
 *   **Interactive Controls:** Pan and zoom within the images.
 *   **Keyboard Navigation:** Use arrow keys (Up/Down/Left/Right) to quickly cycle through the second image in a pair.
@@ -113,10 +116,14 @@ The user interface consists of a control panel on the left and a viewer on the r
     *   **Viewer Mode:** Switch between feature-match inspection and 3D reprojection.
     *   **Data Source:** Select the data source (if multiple are available).
     *   **Image Selection:** Select the two images to compare. You can also use the arrow keys (Up/Down/Left/Right) to cycle through the second image list.
+        The copy button beside each dropdown copies the selected image's exact
+        COLMAP name without the displayed list index.
         Reconstructions without point tracks use nearby, similarly oriented camera poses as image-pair candidates. The viewer labels these generated pairs and lets you configure their maximum count.
     *   **Display Options:**
         *   **Show Markers:** Toggle the visibility of feature markers.
         *   **Show only matched markers:** Show only the markers that have a match in the other image.
+        *   **Show Lines:** Toggle LIMAP 2D line segments when a holistic final model is loaded.
+        *   **Show only matched lines:** Show only segments associated across the selected image pair.
         *   **Match Type:** Filter matches by inlier or outlier.
     *   **Action Buttons:**
         *   **Draw Matches:** Toggle the visibility of match lines.
@@ -127,7 +134,7 @@ The user interface consists of a control panel on the left and a viewer on the r
 *   **Viewer:**
     *   Displays the two selected images side-by-side.
     *   Overlays feature markers and match lines on the images.
-    *   In 3D reprojection mode, displays a draggable render/input split or a side-by-side comparison. Arrow keys select the previous or next registered image.
+    *   In 3D reprojection mode, displays a draggable render/input split or a side-by-side comparison. Arrow keys select the previous or next registered image, and the adjacent copy button copies its exact name.
 
 ## 3D Reprojection Mode
 
@@ -206,6 +213,22 @@ To inspect a renderer handoff, add `gpu_transition_debug_ms=<milliseconds>` to
 the viewer URL. The viewer pauses before and after exposing the incoming frame
 and labels both stages; omit the parameter during normal use.
 
+## LIMAP Final Models
+
+Pass a LIMAP holistic `final_model` directory to `--colmap_project_path` just
+as you would pass a COLMAP sparse model. If the directory contains
+`structures/structures2d.bin`, at least one 2D line, and LIMAP is installed in
+the viewer's Python environment, the feature-match viewer exposes **Show
+Lines**, **Show only matched lines**, and **Draw Line Matches**. Matched
+segments in the second image inherit their corresponding first-image color,
+while all line-match connectors use a uniform cyan distinct from green point
+matches. Line matches connect segment midpoints because line-track endpoints
+are not endpoint correspondences. The existing **Draw Matches** button remains
+specific to point matches.
+
+Only the reconstructed line associations stored in the final model are used.
+Raw LIMAP matcher output and rejected/outlier line matches are not loaded.
+
 ## API Endpoints
 
 The following API endpoints are available:
@@ -224,9 +247,11 @@ The following API endpoints are available:
 *   `GET /api/reprojection/{image_id}/render`: Returns a z-buffered geometric point rendering.
 *   `POST /api/set_source/{source_name}`: Sets the active data source.
 *   `GET /api/images`: Returns a list of all images.
-*   `GET /api/image_data/{image_id}`: Returns the data for a single image, including feature points.
+*   `GET /api/image_data/{image_id}`: Returns the data for a single image, including feature points and available LIMAP lines.
 *   `GET /api/matches_for_image/{image_id}`: Returns a list of image IDs that have matches with the given image.
 *   `GET /api/matches/{image_id1}/{image_id2}`: Returns the matches between two images.
+*   `GET /api/line_matches/{image_id1}/{image_id2}`: Returns final-model LIMAP line associations between two images.
+*   `GET /api/matching/capabilities`: Reports whether the active source contains LIMAP 2D lines.
 *   `GET /api/match_summary/{image_id1}/{image_id2}`: Returns a summary of the matches between two images.
 
 ## Dependencies

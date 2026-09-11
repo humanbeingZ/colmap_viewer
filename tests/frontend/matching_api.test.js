@@ -21,6 +21,12 @@ const fetchImpl = async url => {
 
     await api.matches(1, 2, "inlier");
     assert.strictEqual(requests[1], "/api/matches/1/2?match_type=inlier");
+
+    await api.lineMatches(1, 2);
+    assert.strictEqual(requests[2], "/api/line_matches/1/2");
+
+    await api.capabilities();
+    assert.strictEqual(requests[3], "/api/matching/capabilities");
     console.log("matching API tests passed");
 })().catch(error => {
     console.error(error);

@@ -29,12 +29,24 @@
                         <span>Image 1:</span>
                         <span class="image-navigation-keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></span>
                     </label>
-                    <select id="image1-select"></select>
+                    <div class="image-select-row">
+                        <select id="image1-select"></select>
+                        <button id="copy-image1-name" class="copy-image-name"
+                                type="button" disabled
+                                aria-label="Copy selected Image 1 name"
+                                title="Copy selected Image 1 name"></button>
+                    </div>
                     <label for="image2-select" class="image-selection-label">
                         <span>Image 2:</span>
                         <span class="image-navigation-keys"><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span>
                     </label>
-                    <select id="image2-select"></select>
+                    <div class="image-select-row">
+                        <select id="image2-select"></select>
+                        <button id="copy-image2-name" class="copy-image-name"
+                                type="button" disabled
+                                aria-label="Copy selected Image 2 name"
+                                title="Copy selected Image 2 name"></button>
+                    </div>
                     <div id="generated-pair-options" class="generated-pair-options" hidden>
                         <div id="generated-pair-message"
                              class="generated-pair-message"></div>
@@ -53,6 +65,16 @@
                         <input type="checkbox" id="show-only-matched"> Show only matched markers
                     </label>
 
+                    <div id="line-display-options" hidden>
+                        <label>
+                            <input type="checkbox" id="show-lines"> Show Lines
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="show-only-matched-lines"> Show only matched lines
+                        </label>
+                    </div>
+
                     <div class="match-type-options" style="font-size: 0.9em; color: gray; display: flex; align-items: center;">
                         <span style="font-weight: normal; margin-right: 10px;">Match Type:</span>
                         <label style="margin-right: 10px; font-weight: normal;">
@@ -65,6 +87,9 @@
                 </div>
                 <div class="action-buttons">
                     <button id="draw-matches">Draw Matches</button>
+                    <div id="line-match-actions" hidden>
+                        <button id="draw-line-matches">Draw Line Matches</button>
+                    </div>
                     <button id="draw-epipolar">Draw Epipolar Lines</button>
                     <button id="reset-view">Reset View</button>
                 </div>
@@ -82,7 +107,13 @@
                         <span>Registered image:</span>
                         <span class="image-navigation-keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></span>
                     </label>
-                    <select id="reprojection-image-select"></select>
+                    <div class="image-select-row">
+                        <select id="reprojection-image-select"></select>
+                        <button id="copy-reprojection-image-name"
+                                class="copy-image-name" type="button" disabled
+                                aria-label="Copy selected registered image name"
+                                title="Copy selected registered image name"></button>
+                    </div>
                     <div id="reprojection-mask-field"
                          class="reprojection-field reprojection-mask-field" hidden>
                         <label class="reprojection-checkbox">
@@ -388,10 +419,13 @@
         </div>
     </div>
 
+    <script src="/static/js/shared/clipboard.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/api.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/canvas.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/epipolar.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/navigation.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/correspondence.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/matching/line_controls.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/matching/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/shared/viewer_stream.js"></script>
     <script src="/static/js/reprojection/api.js"></script>

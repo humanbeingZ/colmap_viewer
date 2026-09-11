@@ -1,25 +1,11 @@
 (function (globalScope) {
     "use strict";
 
-    async function copyText(text) {
-        if (globalScope.navigator?.clipboard?.writeText) {
-            await globalScope.navigator.clipboard.writeText(text);
-            return;
-        }
-        const textarea = globalScope.document.createElement("textarea");
-        textarea.value = text;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        globalScope.document.body.appendChild(textarea);
-        textarea.select();
-        try {
-            if (!globalScope.document.execCommand("copy")) {
-                throw new Error("Copy command was rejected");
-            }
-        } finally {
-            textarea.remove();
-        }
-    }
+    const sharedClipboard = globalScope.SharedClipboard || (
+        typeof module !== "undefined" && module.exports
+            ? require("../shared/clipboard.js")
+            : null
+    );
 
     class ReprojectionSourcePicker {
         constructor({
@@ -29,7 +15,7 @@
             onSelect,
             onRename = null,
             onInfo = null,
-            copyText: copyTextImpl = copyText,
+            copyText: copyTextImpl = sharedClipboard?.copyText,
         }) {
             this.select = select;
             this.picker = picker;
@@ -37,6 +23,9 @@
             this.onSelect = onSelect;
             this.onRename = onRename;
             this.onInfo = onInfo;
+            if (!copyTextImpl) {
+                throw new Error("SharedClipboard must be loaded before source_picker.js");
+            }
             this.copyText = copyTextImpl;
             this.hiddenSources = new Set();
             this.knownSources = new Set();
@@ -164,18 +153,19 @@
                 const copy = document.createElement("button");
                 copy.type = "button";
                 copy.className = "reprojection-source-copy";
-                copy.textContent = "Copy";
                 copy.disabled = !value;
                 copy.title = value
                     ? `Copy ${fieldLabel.toLowerCase()}`
                     : `${fieldLabel} unavailable`;
                 copy.setAttribute("aria-label", copy.title);
+                sharedClipboard.decorateButton(copy);
                 copy.addEventListener("click", async event => {
                     event.preventDefault();
                     event.stopPropagation();
                     try {
                         await this.copyText(value);
                         status.textContent = `${fieldLabel} copied`;
+                        sharedClipboard.showCopied(copy, `${fieldLabel} copied`);
                     } catch (_) {
                         status.textContent = `Unable to copy ${fieldLabel.toLowerCase()}`;
                     }

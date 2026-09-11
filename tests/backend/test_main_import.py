@@ -19,6 +19,7 @@ from viewer.app import (
     _is_loopback_request,
     _matching_image_preview,
     _static_asset_version,
+    read_root,
     set_local_reprojection_geometry,
 )
 
@@ -83,6 +84,17 @@ class _FakeColmapPointsService:
 
 
 class MainImportTest(unittest.TestCase):
+    def test_root_template_renders_with_current_starlette_signature(self):
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [],
+        })
+        response = asyncio.run(read_root(request))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"COLMAP Viewer", response.body)
+
     def test_colmap_points_endpoint_streams_the_browser_point_cloud(self):
         service = _FakeColmapPointsService()
         with patch(

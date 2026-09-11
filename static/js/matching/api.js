@@ -17,6 +17,10 @@
             return responseBody(await this.fetch("/api/sources"));
         }
 
+        async capabilities() {
+            return responseBody(await this.fetch("/api/matching/capabilities"));
+        }
+
         async images() {
             return responseBody(await this.fetch("/api/images"));
         }
@@ -40,6 +44,12 @@
             const query = matchType ? `?match_type=${matchType}` : "";
             return responseBody(
                 await this.fetch(`/api/matches/${imageId1}/${imageId2}${query}`)
+            );
+        }
+
+        async lineMatches(imageId1, imageId2) {
+            return responseBody(
+                await this.fetch(`/api/line_matches/${imageId1}/${imageId2}`)
             );
         }
 

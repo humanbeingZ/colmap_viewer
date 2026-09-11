@@ -32,6 +32,49 @@ body {
     display: none !important;
 }
 
+.copy-icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 28px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #57606a;
+    cursor: pointer;
+}
+
+.copy-icon-button:hover:not(:disabled) {
+    background: #eaeef2;
+    color: #24292f;
+}
+
+.copy-icon-button:focus-visible {
+    outline: 2px solid #0969da;
+    outline-offset: 1px;
+}
+
+.copy-icon-button:disabled {
+    cursor: default;
+    opacity: 0.4;
+}
+
+.copy-icon-button.copied {
+    color: #1a7f37;
+}
+
+.copy-icon-button.copied svg {
+    display: none;
+}
+
+.copy-icon-button.copied::after {
+    content: "\2713";
+    font-size: 14px;
+}
+
 .viewer-mode-selection {
     margin-bottom: 16px;
 }
@@ -52,4 +95,3 @@ body {
     border-radius: 4px;
     background: white;
 }
-

@@ -348,8 +348,7 @@
 }
 
 .reprojection-source-copy {
-    padding: 2px 5px;
-    font-size: 0.68rem;
+    align-self: start;
 }
 
 .reprojection-source-copy-status {

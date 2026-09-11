@@ -4,6 +4,10 @@ const reprojectionControls = document.getElementById("reprojection-controls");
 const matchingViewer = document.getElementById("matching-viewer");
 const reprojectionViewer = document.getElementById("reprojection-viewer");
 const reprojectionImageSelect = document.getElementById("reprojection-image-select");
+const copyReprojectionImageNameButton = document.getElementById(
+    "copy-reprojection-image-name"
+);
+SharedClipboard.decorateButton(copyReprojectionImageNameButton);
 const reprojectionStatus = document.getElementById("reprojection-status");
 const reprojectionSplit = document.getElementById("reprojection-split");
 const reprojectionSide = document.getElementById("reprojection-side");
@@ -1303,10 +1307,29 @@ async function loadReprojectionImages() {
         );
         reprojectionState.currentIndex = matchingIndex >= 0 ? matchingIndex : 0;
         reprojectionImageSelect.selectedIndex = reprojectionState.currentIndex;
+        copyReprojectionImageNameButton.disabled = false;
         syncReprojectionMaskControl();
         loadInitialReprojectionFrameIfVisible();
     } catch (error) {
+        copyReprojectionImageNameButton.disabled = true;
         setReprojectionStatus(error.message, true);
+    }
+}
+
+async function copySelectedReprojectionImageName() {
+    const image = reprojectionState.images[reprojectionImageSelect.selectedIndex];
+    if (!image) {
+        return;
+    }
+    try {
+        await SharedClipboard.copyText(image.name);
+        SharedClipboard.showCopied(
+            copyReprojectionImageNameButton, `Copied: ${image.name}`
+        );
+    } catch (error) {
+        console.error("Unable to copy registered image name:", error);
+        copyReprojectionImageNameButton.title =
+            "Unable to copy registered image name";
     }
 }
 
@@ -3333,6 +3356,9 @@ viewerModeSelect.addEventListener("change", () => setViewerMode(viewerModeSelect
 reprojectionImageSelect.addEventListener("change", () => {
     loadReprojectionFrame(reprojectionImageSelect.selectedIndex);
 });
+copyReprojectionImageNameButton.addEventListener(
+    "click", copySelectedReprojectionImageName
+);
 reprojectionColor.addEventListener("change", applyReprojectionPointColor);
 reprojectionPointSize.addEventListener("change", () => {
     setReprojectionPointSize(reprojectionPointSize.value);

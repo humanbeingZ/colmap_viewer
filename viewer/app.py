@@ -123,8 +123,9 @@ def _accepts_content_encoding(header: str, encoding: str) -> bool:
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request,
             "default_pose_neighbors": ColmapService.DEFAULT_POSE_NEIGHBORS,
             "max_pose_neighbors": ColmapService.MAX_POSE_NEIGHBORS,
@@ -599,6 +600,10 @@ async def set_source(source_name: str):
 
 # --- Existing API Endpoints (now source-aware) ---
 
+@app.get("/api/matching/capabilities")
+async def get_matching_capabilities():
+    return {"lines": colmap_service.has_line_data()}
+
 @app.get("/api/images", response_model=List[Dict[str, Any]])
 async def get_images():
     images = colmap_service.get_images()
@@ -633,6 +638,11 @@ async def get_matches(image_id1: int, image_id2: int, match_type: Optional[str] 
         # This can happen if there are no matches, which is not an error.
         return []
     return matches
+
+
+@app.get("/api/line_matches/{image_id1}/{image_id2}")
+async def get_line_matches(image_id1: int, image_id2: int):
+    return colmap_service.get_line_matches(image_id1, image_id2)
 
 
 @app.get("/api/epipolar/{image_id1}/{image_id2}")
